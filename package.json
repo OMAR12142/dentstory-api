@@ -1,7 +1,7 @@
 {
-  "name": "antigravity",
+  "name": "Dentstory",
   "version": "1.0.0",
-  "description": "SaaS backend for freelance Junior Dentists — manage patients, clinics & financials.",
+  "description": "SaaS backend for   Dentists — manage patients, clinics & financials.",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
