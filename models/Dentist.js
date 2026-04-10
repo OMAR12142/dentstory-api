@@ -35,6 +35,11 @@ const dentistSchema = new mongoose.Schema(
       enum: ['dentist', 'admin'],
       default: 'dentist',
     },
+    // ── Saved Insurance Providers ────────────────
+    insuranceProviders: {
+      type: [String],
+      default: ['Private'],
+    },
     // ── Account Status (Kill Switch) ────────────
     status: {
       type: String,

@@ -146,7 +146,15 @@ const getMe = asyncHandler(async (req, res) => {
   }
 
   const token = authHeader.split(' ')[1];
-  const decoded = jwt.verify(token, process.env.ACCESS_TOKEN_SECRET);
+  let decoded;
+
+  try {
+    decoded = jwt.verify(token, process.env.ACCESS_TOKEN_SECRET);
+  } catch (error) {
+    res.status(401);
+    throw new Error('Token expired or invalid');
+  }
+
   const dentist = await Dentist.findById(decoded.id).select('-password -refreshToken');
 
   if (!dentist) {
