@@ -54,7 +54,12 @@ const sessionSchema = new mongoose.Schema(
     },
     treatment_category: {
       type: String,
-      enum: ['Endodontics', 'Surgery', 'Restorative', 'Prosthodontics', 'Orthodontics', 'Pedodontics', 'Cosmetic', 'General', 'Other'],
+      enum: [
+        /* New Categories */
+        'Surgery', 'Implant', 'Endo', 'Perio', 'Fixed', 'Removable', 'Restorative',
+        /* Legacy Categories - Kept for backwards compatibility */
+        'Endodontics', 'Prosthodontics', 'Orthodontics', 'Pedodontics', 'Cosmetic', 'General', 'Other'
+      ],
       required: [true, 'Treatment category is required'],
       default: 'General',
     },
