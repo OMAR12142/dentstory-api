@@ -25,15 +25,20 @@ const dentistSchema = new mongoose.Schema(
       type: String,
       trim: true,
     },
-    refreshToken: {
-      type: String,
-      default: null,
+    refreshTokens: {
+      type: [String],
+      default: [],
     },
     // ── Role-Based Access Control ────────────────
     role: {
       type: String,
       enum: ['dentist', 'admin'],
       default: 'dentist',
+    },
+    // ── Saved Insurance Providers ────────────────
+    insuranceProviders: {
+      type: [String],
+      default: ['Private'],
     },
     // ── Account Status (Kill Switch) ────────────
     status: {

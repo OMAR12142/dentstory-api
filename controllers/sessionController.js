@@ -41,8 +41,11 @@ const createSession = asyncHandler(async (req, res) => {
     throw new Error('No clinic assigned to this patient. Please edit the patient and assign a clinic first.');
   }
 
-  // 3. Collect Cloudinary secure_urls from uploaded files
-  const media_urls = req.files ? req.files.map((f) => f.path) : [];
+  // 3. Collect Cloudinary secure_urls from uploaded files (limit total to 5)
+  let media_urls = req.files ? req.files.map((f) => f.path) : [];
+  if (media_urls.length > 5) {
+    media_urls = media_urls.slice(0, 5);
+  }
 
   // 4. Auto-calculate dentist_cut using patient's commission (with clinic default as fallback)
   const cost = parseFloat(total_cost) || 0;
@@ -54,12 +57,23 @@ const createSession = asyncHandler(async (req, res) => {
 
   const dentist_cut = cost * (commissionRate / 100);
 
+  // Parse treatment_category from JSON string (sent via FormData)
+  let parsedCategories = treatment_category;
+  if (typeof treatment_category === 'string') {
+    try {
+      parsedCategories = JSON.parse(treatment_category);
+    } catch {
+      // Legacy single string - wrap in array
+      parsedCategories = treatment_category ? [treatment_category] : [];
+    }
+  }
+
   const session = await Session.create({
     dentist_id: req.dentist._id,
     patient_id,
     clinic_id: clinic._id,   // sessions still store clinic_id → analytics unchanged
     date,
-    treatment_category,
+    treatment_category: parsedCategories,
     treatment_details,
     media_urls,
     total_cost: cost,
@@ -145,9 +159,39 @@ const updateSession = asyncHandler(async (req, res) => {
 
   req.body.remaining_balance = total_cost - amount_paid;
 
-  if (req.files && req.files.length > 0) {
-    const newMediaUrls = req.files.map((f) => f.path);
-    req.body.media_urls = [...(session.media_urls || []), ...newMediaUrls];
+  // Handle media updates (existing + new)
+  if (req.body.existing_media || (req.files && req.files.length > 0)) {
+    let baseMedia = [];
+    if (req.body.existing_media) {
+      try {
+        baseMedia = JSON.parse(req.body.existing_media);
+      } catch (e) {
+        // Fallback if not JSON (though we'll send it as JSON string)
+        baseMedia = Array.isArray(req.body.existing_media) ? req.body.existing_media : [req.body.existing_media];
+      }
+    } else {
+      baseMedia = session.media_urls || [];
+    }
+
+    const newMediaUrls = req.files ? req.files.map((f) => f.path) : [];
+    let combinedMedia = [...baseMedia, ...newMediaUrls];
+    
+    // Enforce 5 image limit
+    if (combinedMedia.length > 5) {
+      combinedMedia = combinedMedia.slice(0, 5);
+    }
+    
+    req.body.media_urls = combinedMedia;
+  }
+
+  // Parse treatment_category from JSON string if present
+  if (req.body.treatment_category && typeof req.body.treatment_category === 'string') {
+    try {
+      req.body.treatment_category = JSON.parse(req.body.treatment_category);
+    } catch {
+      // Legacy single string - wrap in array
+      req.body.treatment_category = req.body.treatment_category ? [req.body.treatment_category] : [];
+    }
   }
 
   const updatedSession = await Session.findOneAndUpdate(

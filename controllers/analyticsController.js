@@ -194,7 +194,8 @@ const getTreatmentDistribution = asyncHandler(async (req, res) => {
         clinic_id: { $in: clinicIds },
       },
     },
-    // Group by treatment_category (no $unwind needed - it's a String field, not array)
+    // Unwind the treatment_category array so each category is counted individually
+    { $unwind: '$treatment_category' },
     {
       $group: {
         _id: '$treatment_category',
