@@ -5,19 +5,19 @@ const Dentist = require('../models/Dentist');
 // ── Helpers ───────────────────────────────────
 const generateAccessToken = (id, role) =>
   jwt.sign({ id, role }, process.env.ACCESS_TOKEN_SECRET, {
-    expiresIn: process.env.ACCESS_TOKEN_EXPIRES_IN || '15m',
+    expiresIn: process.env.ACCESS_TOKEN_EXPIRES_IN || '30d',
   });
 
 const generateRefreshToken = (id, role) =>
   jwt.sign({ id, role }, process.env.REFRESH_TOKEN_SECRET, {
-    expiresIn: process.env.REFRESH_TOKEN_EXPIRES_IN || '7d',
+    expiresIn: process.env.REFRESH_TOKEN_EXPIRES_IN || '30d',
   });
 
 const REFRESH_COOKIE_OPTIONS = {
   httpOnly: true,
   secure: process.env.NODE_ENV === 'production',
-  sameSite: process.env.NODE_ENV === 'production' ? 'strict' : 'lax',
-  maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
+  sameSite: 'none',
+  maxAge: 30 * 24 * 60 * 60 * 1000, // 30 days
 };
 
 // ── Register ──────────────────────────────────
@@ -36,8 +36,11 @@ const register = asyncHandler(async (req, res) => {
   const accessToken = generateAccessToken(dentist._id, dentist.role);
   const refreshToken = generateRefreshToken(dentist._id, dentist.role);
 
-  // Persist refresh token in DB
-  dentist.refreshToken = refreshToken;
+  // Persist refresh token in DB (limit array size to 5 devices max)
+  dentist.refreshTokens.push(refreshToken);
+  if (dentist.refreshTokens.length > 5) {
+    dentist.refreshTokens = dentist.refreshTokens.slice(-5);
+  }
   await dentist.save({ validateModifiedOnly: true });
 
   res.cookie('refreshToken', refreshToken, REFRESH_COOKIE_OPTIONS);
@@ -65,7 +68,10 @@ const login = asyncHandler(async (req, res) => {
   const accessToken = generateAccessToken(dentist._id, dentist.role);
   const refreshToken = generateRefreshToken(dentist._id, dentist.role);
 
-  dentist.refreshToken = refreshToken;
+  dentist.refreshTokens.push(refreshToken);
+  if (dentist.refreshTokens.length > 5) {
+    dentist.refreshTokens = dentist.refreshTokens.slice(-5);
+  }
   await dentist.save({ validateModifiedOnly: true });
 
   res.cookie('refreshToken', refreshToken, REFRESH_COOKIE_OPTIONS);
@@ -97,19 +103,16 @@ const refreshAccessToken = asyncHandler(async (req, res) => {
   }
 
   const dentist = await Dentist.findById(decoded.id);
-  if (!dentist || dentist.refreshToken !== token) {
+  if (!dentist || !dentist.refreshTokens.includes(token)) {
     res.status(403);
     throw new Error('Refresh token mismatch — possible reuse detected');
   }
 
-  // Rotate tokens (include current role from DB for freshness)
+  // Issue a new short-lived access token, but DO NOT rotate the refresh
+  // token to prevent race conditions when the user has multiple tabs open.
   const newAccessToken = generateAccessToken(dentist._id, dentist.role);
-  const newRefreshToken = generateRefreshToken(dentist._id, dentist.role);
 
-  dentist.refreshToken = newRefreshToken;
-  await dentist.save({ validateModifiedOnly: true });
-
-  res.cookie('refreshToken', newRefreshToken, REFRESH_COOKIE_OPTIONS);
+  res.cookie('refreshToken', token, REFRESH_COOKIE_OPTIONS);
   res.json({
     accessToken: newAccessToken,
     role: dentist.role,       // let frontend stay in sync after silent refresh
@@ -122,9 +125,9 @@ const logout = asyncHandler(async (req, res) => {
   const token = req.cookies?.refreshToken;
 
   if (token) {
-    const dentist = await Dentist.findOne({ refreshToken: token });
+    const dentist = await Dentist.findOne({ refreshTokens: token });
     if (dentist) {
-      dentist.refreshToken = null;
+      dentist.refreshTokens = dentist.refreshTokens.filter((t) => t !== token);
       await dentist.save({ validateModifiedOnly: true });
     }
   }
@@ -146,7 +149,15 @@ const getMe = asyncHandler(async (req, res) => {
   }
 
   const token = authHeader.split(' ')[1];
-  const decoded = jwt.verify(token, process.env.ACCESS_TOKEN_SECRET);
+  let decoded;
+
+  try {
+    decoded = jwt.verify(token, process.env.ACCESS_TOKEN_SECRET);
+  } catch (error) {
+    res.status(401);
+    throw new Error('Token expired or invalid');
+  }
+
   const dentist = await Dentist.findById(decoded.id).select('-password -refreshToken');
 
   if (!dentist) {

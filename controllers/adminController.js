@@ -299,6 +299,7 @@ const getDentistProfile = asyncHandler(async (req, res) => {
       // 5️⃣  Treatment category breakdown
       Session.aggregate([
         { $match: { dentist_id: new mongoose.Types.ObjectId(id) } },
+        { $unwind: '$treatment_category' },
         {
           $group: {
             _id: '$treatment_category',

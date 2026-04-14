@@ -31,7 +31,7 @@ const sessionSchema = new mongoose.Schema(
     },
     total_cost: {
       type: Number,
-      required: [true, 'Total cost is required'],
+      default: 0,
       min: 0,
     },
     amount_paid: {
@@ -53,10 +53,8 @@ const sessionSchema = new mongoose.Schema(
       type: Date,
     },
     treatment_category: {
-      type: String,
-      enum: ['Endodontics', 'Surgery', 'Restorative', 'Prosthodontics', 'Orthodontics', 'Pedodontics', 'Cosmetic', 'General', 'Other'],
-      required: [true, 'Treatment category is required'],
-      default: 'General',
+      type: [String],
+      default: [],
     },
   },
   { timestamps: true }

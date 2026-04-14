@@ -16,13 +16,37 @@ const patientSchema = new mongoose.Schema(
       type: Number,
       min: 0,
     },
+    dateOfBirth: {
+      type: Date,
+    },
     phone: {
       type: String,
       trim: true,
     },
+    phone2: {
+      type: String,
+      trim: true,
+      default: '',
+    },
     medical_history: {
       type: [String],
       default: [],
+    },
+    // ── Treatment Plan ────────────────────────
+    treatment_plan: [
+      {
+        text: { type: String, required: true },
+        isCompleted: { type: Boolean, default: false },
+        createdAt: { type: Date, default: Date.now },
+      }
+    ],
+    address: {
+      type: String,
+      trim: true,
+    },
+    job: {
+      type: String,
+      trim: true,
     },
     status: {
       type: String,
