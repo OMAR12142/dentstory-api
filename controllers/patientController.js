@@ -115,9 +115,23 @@ const updatePatient = asyncHandler(async (req, res) => {
     updatePayload.commission_percentage = parseFloat(commission_percentage);
   }
 
+  // ── Special handling for treatment_plan array ──
+  // Mongoose subdocument arrays with auto _id need explicit $set to properly replace/shrink
+  let treatmentPlanOverride = null;
+  if (updatePayload.treatment_plan !== undefined) {
+    treatmentPlanOverride = updatePayload.treatment_plan;
+    delete updatePayload.treatment_plan;
+  }
+
+  // Build the final update operation
+  const updateOp = { ...updatePayload };
+  if (treatmentPlanOverride !== null) {
+    updateOp.treatment_plan = treatmentPlanOverride;
+  }
+
   const patient = await Patient.findOneAndUpdate(
     { _id: req.params.id, dentist_id: req.dentist._id },
-    updatePayload,
+    { $set: updateOp },
     { new: true, runValidators: true }
   ).populate('clinic_id', 'name default_commission_percentage');
 
