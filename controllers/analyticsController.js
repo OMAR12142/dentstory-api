@@ -175,26 +175,51 @@ const getMonthlyEarnings = asyncHandler(async (req, res) => {
 });
 
 // ── Get Treatment Distribution ────────────────
-// GET /api/analytics/treatments
+// GET /api/analytics/treatments?filterType=yearly|all|custom&year=2026&startDate=...&endDate=...
 const getTreatmentDistribution = asyncHandler(async (req, res) => {
+  const { 
+    filterType = 'all', 
+    year = new Date().getFullYear(),
+    startDate: customStart,
+    endDate: customEnd
+  } = req.query;
+
   const dentistId = req.dentist._id;
 
-  // SECURITY: Always filter by dentist_id to prevent data leakage
-  // Only consider clinics AND sessions owned by the logged-in dentist
+  // SECURITY: Filter clinics owned by the dentist
   const dentistClinics = await Clinic.find({ dentist_id: dentistId }).select('_id').lean();
   const clinicIds = dentistClinics.map((c) => c._id);
 
+  // Define Date Match Stage
+  let dateMatch = {};
+  if (filterType === 'yearly') {
+    const selectedYear = parseInt(year, 10);
+    dateMatch = {
+      $gte: new Date(selectedYear, 0, 1),
+      $lte: new Date(selectedYear, 11, 31, 23, 59, 59, 999),
+    };
+  } else if (filterType === 'custom' && customStart && customEnd) {
+    dateMatch = {
+      $gte: new Date(customStart),
+      $lte: new Date(customEnd),
+    };
+    dateMatch.$lte.setHours(23, 59, 59, 999);
+  } else if (filterType === 'all') {
+    dateMatch = { $exists: true };
+  }
+
   const treatmentDistribution = await Session.aggregate([
     {
-      // CRITICAL: Filter by BOTH dentist_id AND clinic_id
+      // Filter by dentist, clinics, AND the calculated date range
       $match: {
         dentist_id: mongoose.Types.ObjectId.isValid(dentistId)
           ? new mongoose.Types.ObjectId(dentistId)
           : dentistId,
         clinic_id: { $in: clinicIds },
+        date: dateMatch,
       },
     },
-    // Unwind the treatment_category array so each category is counted individually
+    // Unwind the treatment_category array
     { $unwind: '$treatment_category' },
     {
       $group: {
@@ -202,7 +227,6 @@ const getTreatmentDistribution = asyncHandler(async (req, res) => {
         count: { $sum: 1 },
       },
     },
-    // Normalize categories: trim and standardize casing
     {
       $project: {
         _id: 0,
@@ -210,27 +234,33 @@ const getTreatmentDistribution = asyncHandler(async (req, res) => {
         count: 1,
       },
     },
-    // Sort by count descending (most common treatments first)
     { $sort: { count: -1 } },
   ]);
 
   res.json({
+    filterType,
     treatmentDistribution,
   });
 });
 
 // ── Get Historical Earnings Analytics ─────────────────────
 // GET /api/analytics/earnings-history?year=2026&month=3
+// ── Get Historical Earnings Analytics ─────────────────────
+// GET /api/analytics/earnings-history?filterType=yearly|all|custom&year=2026&month=3&startDate=2024-01-01&endDate=2024-12-31
 const getEarningsHistory = asyncHandler(async (req, res) => {
-  const { year = new Date().getFullYear(), month } = req.query;
+  const { 
+    filterType = 'yearly', 
+    year = new Date().getFullYear(), 
+    month,
+    startDate: customStart,
+    endDate: customEnd
+  } = req.query;
+  
   const dentistId = req.dentist._id;
 
   if (!dentistId) {
     return res.status(401).json({ error: 'Dentist ID required' });
   }
-
-  const selectedYear = parseInt(year, 10);
-  const selectedMonth = month ? parseInt(month, 10) : null;
 
   // SECURITY: Always filter by dentist_id
   const dentistClinics = await Clinic.find({ dentist_id: dentistId })
@@ -238,23 +268,45 @@ const getEarningsHistory = asyncHandler(async (req, res) => {
     .lean();
   const clinicIds = dentistClinics.map((c) => c._id);
 
-  // Get yearly trend: earnings for each month of the selected year
-  const yearlyTrend = await Session.aggregate([
+  // 1. Define the Date Match Stage
+  let dateMatch = {};
+  const selectedYear = parseInt(year, 10);
+  const selectedMonth = month ? parseInt(month, 10) : null;
+
+  if (filterType === 'yearly') {
+    dateMatch = {
+      $gte: new Date(selectedYear, 0, 1),
+      $lte: new Date(selectedYear, 11, 31, 23, 59, 59, 999),
+    };
+  } else if (filterType === 'custom' && customStart && customEnd) {
+    dateMatch = {
+      $gte: new Date(customStart),
+      $lte: new Date(customEnd),
+    };
+    // Ensure the end date covers the full day
+    dateMatch.$lte.setHours(23, 59, 59, 999);
+  } else if (filterType === 'all') {
+    // No date restriction for "All-Time"
+    dateMatch = { $exists: true };
+  }
+
+  // 2. Aggregate Yearly/Timeline Trend
+  const trendAggregation = [
     {
       $match: {
         dentist_id: mongoose.Types.ObjectId.isValid(dentistId)
           ? new mongoose.Types.ObjectId(dentistId)
           : dentistId,
         clinic_id: { $in: clinicIds },
-        date: {
-          $gte: new Date(selectedYear, 0, 1),
-          $lte: new Date(selectedYear, 11, 31, 23, 59, 59, 999),
-        },
+        date: dateMatch,
       },
     },
     {
       $group: {
-        _id: { $month: '$date' }, // Group by month (1-12)
+        _id: {
+          year: { $year: '$date' },
+          month: { $month: '$date' },
+        },
         totalEarnings: { $sum: '$dentist_cut' },
         totalSessions: { $sum: 1 },
       },
@@ -262,92 +314,106 @@ const getEarningsHistory = asyncHandler(async (req, res) => {
     {
       $project: {
         _id: 0,
-        month: '$_id',
+        year: '$_id.year',
+        month: '$_id.month',
         earnings: { $round: ['$totalEarnings', 2] },
         sessions: '$totalSessions',
       },
     },
-    { $sort: { month: 1 } },
-  ]);
-
-  // Fill in missing months with 0 earnings
-  const monthNames = [
-    'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
-    'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
+    { $sort: { year: 1, month: 1 } },
   ];
-  
-  const completeYearlyTrend = monthNames.map((name, idx) => {
-    const monthNum = idx + 1;
-    const monthData = yearlyTrend.find((m) => m.month === monthNum);
-    return {
-      month: name,
-      monthNum,
-      earnings: monthData?.earnings || 0,
-      sessions: monthData?.sessions || 0,
-    };
-  });
 
-  // Get monthly breakdown if a specific month is requested
-  let monthlyBreakdown = [];
-  if (selectedMonth && selectedMonth >= 1 && selectedMonth <= 12) {
-    monthlyBreakdown = await Session.aggregate([
-      {
-        $match: {
-          dentist_id: mongoose.Types.ObjectId.isValid(dentistId)
-            ? new mongoose.Types.ObjectId(dentistId)
-            : dentistId,
-          clinic_id: { $in: clinicIds },
-          date: {
-            $gte: new Date(selectedYear, selectedMonth - 1, 1),
-            $lte: new Date(selectedYear, selectedMonth, 0, 23, 59, 59, 999),
-          },
-        },
-      },
-      {
-        $lookup: {
-          from: 'clinics',
-          localField: 'clinic_id',
-          foreignField: '_id',
-          as: 'clinic',
-        },
-      },
-      { $unwind: '$clinic' },
-      {
-        $group: {
-          _id: {
-            clinic_id: '$clinic_id',
-            clinicName: '$clinic.name',
-          },
-          totalEarnings: { $sum: '$dentist_cut' },
-          totalSessions: { $sum: 1 },
-        },
-      },
-      {
-        $project: {
-          _id: 0,
-          clinicId: '$_id.clinic_id',
-          clinicName: '$_id.clinicName',
-          earnings: { $round: ['$totalEarnings', 2] },
-          sessions: '$totalSessions',
-        },
-      },
-      { $sort: { earnings: -1 } },
-    ]);
+  const yearlyTrend = await Session.aggregate(trendAggregation);
+
+  // Format labels based on range duration
+  const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  
+  let formattedTrend = yearlyTrend.map(point => ({
+    ...point,
+    monthLabel: filterType === 'yearly' ? monthNames[point.month - 1] : `${monthNames[point.month - 1]} ${String(point.year).slice(-2)}`,
+    // For recharts dataKey
+    month: filterType === 'yearly' ? monthNames[point.month - 1] : `${monthNames[point.month - 1]} ${String(point.year).slice(-2)}`
+  }));
+
+  // If "yearly" is selected and we have 0 data for some months, fill them in
+  if (filterType === 'yearly') {
+    const completeYearlyTrend = monthNames.map((name, idx) => {
+      const monthNum = idx + 1;
+      const monthData = formattedTrend.find((m) => m.month === name);
+      return monthData || {
+        month: name,
+        monthNum,
+        year: selectedYear,
+        earnings: 0,
+        sessions: 0,
+      };
+    });
+    formattedTrend = completeYearlyTrend;
   }
 
-  const totalYearlyEarnings = completeYearlyTrend.reduce((sum, m) => sum + m.earnings, 0);
-  const totalYearlySessions = completeYearlyTrend.reduce((sum, m) => sum + m.sessions, 0);
-  const totalMonthlyEarnings = monthlyBreakdown.reduce((sum, m) => sum + m.earnings, 0);
+  // 3. Get monthly breakdown (if specific month OR if range is small)
+  // For 'yearly', we use selectedMonth. For other types, we might just use the whole range breakdown.
+  let breakdownMatch = { ...dateMatch };
+  if (filterType === 'yearly' && selectedMonth) {
+    breakdownMatch = {
+      $gte: new Date(selectedYear, selectedMonth - 1, 1),
+      $lte: new Date(selectedYear, selectedMonth, 0, 23, 59, 59, 999),
+    };
+  }
+
+  const monthlyBreakdown = await Session.aggregate([
+    {
+      $match: {
+        dentist_id: mongoose.Types.ObjectId.isValid(dentistId)
+          ? new mongoose.Types.ObjectId(dentistId)
+          : dentistId,
+        clinic_id: { $in: clinicIds },
+        date: breakdownMatch,
+      },
+    },
+    {
+      $lookup: {
+        from: 'clinics',
+        localField: 'clinic_id',
+        foreignField: '_id',
+        as: 'clinic',
+      },
+    },
+    { $unwind: '$clinic' },
+    {
+      $group: {
+        _id: {
+          clinic_id: '$clinic_id',
+          clinicName: '$clinic.name',
+        },
+        totalEarnings: { $sum: '$dentist_cut' },
+        totalSessions: { $sum: 1 },
+      },
+    },
+    {
+      $project: {
+        _id: 0,
+        clinicId: '$_id.clinic_id',
+        clinicName: '$_id.clinicName',
+        earnings: { $round: ['$totalEarnings', 2] },
+        sessions: '$totalSessions',
+      },
+    },
+    { $sort: { earnings: -1 } },
+  ]);
+
+  const totalEarnings = formattedTrend.reduce((sum, m) => sum + m.earnings, 0);
+  const totalSessions = formattedTrend.reduce((sum, m) => sum + m.sessions, 0);
+  const periodEarnings = monthlyBreakdown.reduce((sum, m) => sum + m.earnings, 0);
 
   res.json({
-    year: selectedYear,
-    month: selectedMonth,
+    filterType,
     summary: {
-      totalYearlyEarnings: Math.round(totalYearlyEarnings * 100) / 100,
-      totalYearlySessions,
-      totalMonthlyEarnings: selectedMonth ? Math.round(totalMonthlyEarnings * 100) / 100 : 0,
+      totalYearlyEarnings: Math.round(totalEarnings * 100) / 100,
+      totalYearlySessions: totalSessions,
+      totalMonthlyEarnings: Math.round(periodEarnings * 100) / 100,
     },
-    yearlyTrend: completeYearlyTrend,
+    yearlyTrend: formattedTrend,
     monthlyBreakdown,
   });
 });
