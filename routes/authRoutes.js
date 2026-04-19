@@ -8,6 +8,7 @@ const {
   logout,
   getMe,
 } = require('../controllers/authController');
+const { authLimiter } = require('../middleware/rateLimiter');
 
 const router = express.Router();
 
@@ -25,8 +26,8 @@ const loginSchema = z.object({
 });
 
 // ── Routes ────────────────────────────────────
-router.post('/register', validate(registerSchema), register);
-router.post('/login', validate(loginSchema), login);
+router.post('/register', authLimiter, validate(registerSchema), register);
+router.post('/login', authLimiter, validate(loginSchema), login);
 router.post('/refresh', refreshAccessToken);
 router.post('/logout', logout);
 router.get('/me', getMe);

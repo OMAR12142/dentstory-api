@@ -1,5 +1,6 @@
 const asyncHandler = require('express-async-handler');
 const mongoose = require('mongoose');
+const crypto = require('crypto');
 const Dentist = require('../models/Dentist');
 const Patient = require('../models/Patient');
 const Session = require('../models/Session');
@@ -11,9 +12,10 @@ const Clinic = require('../models/Clinic');
 // @access  Private / Admin
 // ─────────────────────────────────────────────────────────────
 const getPlatformStats = asyncHandler(async (_req, res) => {
-  const [totalDentists, totalSessions, insuranceDistribution] =
+  const [totalDentists, totalPatients, totalSessions, insuranceDistribution] =
     await Promise.all([
       Dentist.countDocuments({ role: 'dentist' }),
+      Patient.countDocuments(),
       Session.countDocuments(),
       Patient.aggregate([
         { $group: { _id: '$insuranceCompany', count: { $sum: 1 } } },
@@ -22,7 +24,7 @@ const getPlatformStats = asyncHandler(async (_req, res) => {
       ]),
     ]);
 
-  res.json({ totalDentists, totalSessions, insuranceDistribution });
+  res.json({ totalDentists, totalPatients, totalSessions, insuranceDistribution });
 });
 
 // ─────────────────────────────────────────────────────────────
@@ -248,7 +250,7 @@ const getDentistProfile = asyncHandler(async (req, res) => {
     await Promise.all([
       // 1️⃣  All patients belonging to this dentist
       Patient.find({ dentist_id: id })
-        .select('name age phone status insuranceCompany createdAt')
+        .select('name age dateOfBirth phone status insuranceCompany createdAt')
         .sort({ createdAt: -1 }),
 
       // 2️⃣  All clinics belonging to this dentist
@@ -299,6 +301,7 @@ const getDentistProfile = asyncHandler(async (req, res) => {
       // 5️⃣  Treatment category breakdown
       Session.aggregate([
         { $match: { dentist_id: new mongoose.Types.ObjectId(id) } },
+        { $unwind: '$treatment_category' },
         {
           $group: {
             _id: '$treatment_category',
@@ -351,10 +354,48 @@ const getDentistProfile = asyncHandler(async (req, res) => {
   });
 });
 
+// ─────────────────────────────────────────────────────────────
+// @desc    Force a password reset (generate temporary password)
+// @route   POST /api/admin/dentists/:id/reset-password
+// @access  Private / Admin
+// ─────────────────────────────────────────────────────────────
+const resetDentistPassword = asyncHandler(async (req, res) => {
+  const dentist = await Dentist.findById(req.params.id);
+
+  if (!dentist) {
+    res.status(404);
+    throw new Error('Dentist not found');
+  }
+
+  // Prevent an admin from resetting their own password this way (safety check)
+  if (dentist._id.toString() === req.dentist._id.toString()) {
+    res.status(400);
+    throw new Error('You cannot reset your own password via admin panel');
+  }
+
+  // Generate a secure 12-character random string for the temporary password
+  const newPassword = crypto.randomBytes(6).toString('hex');
+
+  // Update password and clear refreshTokens to force logout from all devices
+  dentist.password = newPassword;
+  dentist.refreshTokens = [];
+
+  // Mongoose pre('save') hook will take care of hashing the newpassword
+  await dentist.save();
+
+  res.json({
+    _id: dentist._id,
+    name: dentist.name,
+    message: 'Password successfully reset.',
+    temporaryPassword: newPassword, // Only returned this ONE time to the admin
+  });
+});
+
 module.exports = {
   getPlatformStats,
   getAllDentists,
   toggleDentistStatus,
   getRevenueStats,
   getDentistProfile,
+  resetDentistPassword,
 };

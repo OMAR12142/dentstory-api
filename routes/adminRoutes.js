@@ -7,6 +7,7 @@ const {
   toggleDentistStatus,
   getRevenueStats,
   getDentistProfile,
+  resetDentistPassword,
 } = require('../controllers/adminController');
 
 // ── Apply auth + admin guard to every route in this file ──
@@ -28,5 +29,8 @@ router.get('/dentists/:id', getDentistProfile);
 
 // PATCH /api/admin/dentists/:id/status → toggle active/suspended
 router.patch('/dentists/:id/status', toggleDentistStatus);
+
+// POST /api/admin/dentists/:id/reset-password → force password reset
+router.post('/dentists/:id/reset-password', resetDentistPassword);
 
 module.exports = router;

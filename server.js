@@ -7,6 +7,7 @@ const morgan = require('morgan');
 const cookieParser = require('cookie-parser');
 const connectDB = require('./config/db');
 const errorHandler = require('./middleware/errorHandler');
+const { apiLimiter } = require('./middleware/rateLimiter');
 
 // ── Route imports ─────────────────────────────
 const authRoutes = require('./routes/authRoutes');
@@ -16,6 +17,7 @@ const sessionRoutes = require('./routes/sessionRoutes');
 const analyticsRoutes = require('./routes/analyticsRoutes');
 const taskRoutes = require('./routes/taskRoutes');
 const adminRoutes = require('./routes/adminRoutes');
+const insuranceRoutes = require('./routes/insuranceRoutes');
 
 // ── App initialisation ────────────────────────
 const app = express();
@@ -41,6 +43,10 @@ app.get('/api/health', (_req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
+// ── Rate Limiting ─────────────────────────────
+// Apply global apiLimiter to all requests under /api
+app.use('/api', apiLimiter);
+
 // ── API routes ────────────────────────────────
 app.use('/api/auth', authRoutes);
 app.use('/api/patients', patientRoutes);
@@ -49,6 +55,7 @@ app.use('/api/sessions', sessionRoutes);
 app.use('/api/analytics', analyticsRoutes);
 app.use('/api/tasks', taskRoutes);
 app.use('/api/admin', adminRoutes);
+app.use('/api/insurance', insuranceRoutes);
 
 // ── 404 handler ───────────────────────────────
 app.use((_req, res) => {
