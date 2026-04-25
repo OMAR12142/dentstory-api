@@ -22,4 +22,22 @@ const upload = multer({
  */
 const uploadImages = upload.array('images', 5);
 
-module.exports = { uploadImages };
+// ── Avatar Upload (Profile Photo) ──────────────
+const avatarStorage = new CloudinaryStorage({
+  cloudinary,
+  params: {
+    folder: 'dentstory/avatars',
+    allowed_formats: ['jpg', 'jpeg', 'png', 'webp'],
+    transformation: [{ width: 400, height: 400, crop: 'fill', gravity: 'face', quality: 'auto' }],
+  },
+});
+
+const avatarUpload = multer({
+  storage: avatarStorage,
+  limits: { fileSize: 2 * 1024 * 1024 }, // 2 MB
+});
+
+const uploadAvatar = avatarUpload.single('avatar');
+
+module.exports = { uploadImages, uploadAvatar };
+

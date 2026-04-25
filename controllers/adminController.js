@@ -34,12 +34,19 @@ const getPlatformStats = asyncHandler(async (_req, res) => {
 // ─────────────────────────────────────────────────────────────
 const getAllDentists = asyncHandler(async (req, res) => {
   const { search } = req.query;
+  const page = Math.max(parseInt(req.query.page, 10) || 1, 1);
+  const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 10, 1), 100);
+  const skip = (page - 1) * limit;
+
   const matchStage = { role: 'dentist' };
 
   if (search) {
     const regex = new RegExp(search, 'i');
     matchStage.$or = [{ name: regex }, { email: regex }];
   }
+
+  // Count total matching for pagination metadata
+  const totalDentists = await Dentist.countDocuments(matchStage);
 
   const dentists = await Dentist.aggregate([
     { $match: matchStage },
@@ -64,9 +71,17 @@ const getAllDentists = asyncHandler(async (req, res) => {
     { $addFields: { sessionCount: { $size: '$_sessions' } } },
     { $project: { _patients: 0, _sessions: 0 } },
     { $sort: { createdAt: -1 } },
+    { $skip: skip },
+    { $limit: limit },
   ]);
 
-  res.json({ count: dentists.length, dentists });
+  res.json({
+    totalDentists,
+    totalPages: Math.ceil(totalDentists / limit),
+    currentPage: page,
+    limit,
+    dentists
+  });
 });
 
 // ─────────────────────────────────────────────────────────────
@@ -245,28 +260,18 @@ const getDentistProfile = asyncHandler(async (req, res) => {
     throw new Error('Dentist not found');
   }
 
-  // Run all queries in parallel
-  const [patients, clinics, recentSessions, earningsByClinic, treatmentBreakdown, totals] =
+  // Run optimized queries in parallel (Removing full Patients and Recent Sessions)
+  const [patientCount, clinics, earningsByClinic, treatmentBreakdown, totals] =
     await Promise.all([
-      // 1️⃣  All patients belonging to this dentist
-      Patient.find({ dentist_id: id })
-        .select('name age dateOfBirth phone status insuranceCompany createdAt')
-        .sort({ createdAt: -1 }),
+      // 1️⃣  Count of patients belonging to this dentist (Optimized)
+      Patient.countDocuments({ dentist_id: id, isDeleted: { $ne: true } }),
 
       // 2️⃣  All clinics belonging to this dentist
       Clinic.find({ dentist_id: id })
         .select('name address default_commission_percentage')
         .sort({ name: 1 }),
 
-      // 3️⃣  Last 10 sessions
-      Session.find({ dentist_id: id })
-        .populate('patient_id', 'name')
-        .populate('clinic_id', 'name')
-        .select('date treatment_category total_cost amount_paid dentist_cut remaining_balance')
-        .sort({ date: -1 })
-        .limit(10),
-
-      // 4️⃣  Earnings breakdown by clinic
+      // 3️⃣  Earnings breakdown by clinic
       Session.aggregate([
         { $match: { dentist_id: new mongoose.Types.ObjectId(id) } },
         {
@@ -298,7 +303,7 @@ const getDentistProfile = asyncHandler(async (req, res) => {
         { $sort: { totalRevenue: -1 } },
       ]),
 
-      // 5️⃣  Treatment category breakdown
+      // 4️⃣  Treatment category breakdown
       Session.aggregate([
         { $match: { dentist_id: new mongoose.Types.ObjectId(id) } },
         { $unwind: '$treatment_category' },
@@ -320,7 +325,7 @@ const getDentistProfile = asyncHandler(async (req, res) => {
         },
       ]),
 
-      // 6️⃣  Overall totals for this dentist
+      // 5️⃣  Overall totals for this dentist
       Session.aggregate([
         { $match: { dentist_id: new mongoose.Types.ObjectId(id) } },
         {
@@ -345,10 +350,8 @@ const getDentistProfile = asyncHandler(async (req, res) => {
       totalOutstanding: 0,
       sessionCount: 0,
     },
-    patientCount: patients.length,
-    patients,
+    patientCount,
     clinics,
-    recentSessions,
     earningsByClinic,
     treatmentBreakdown,
   });

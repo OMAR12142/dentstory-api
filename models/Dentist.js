@@ -40,6 +40,11 @@ const dentistSchema = new mongoose.Schema(
       type: [String],
       default: ['Private'],
     },
+    // ── Profile Photo (Cloudinary) ──────────────
+    profilePhoto: {
+      url: { type: String, default: '' },
+      publicId: { type: String, default: '' },
+    },
     // ── Account Status (Kill Switch) ────────────
     status: {
       type: String,

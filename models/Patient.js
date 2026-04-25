@@ -78,9 +78,28 @@ const patientSchema = new mongoose.Schema(
         createdAt: { type: Date, default: Date.now },
       },
     ],
+    isDeleted: {
+      type: Boolean,
+      default: false,
+      index: true,
+    },
+    deletedAt: {
+      type: Date,
+      default: null,
+    },
   },
   { timestamps: true }
 );
+
+// ── Performance Indexes ───────────────────────
+// Optimizes newest-patient-first list retrieval
+patientSchema.index({ dentist_id: 1, createdAt: -1 });
+
+// Optimizes filtering by status (Active, On-Hold, etc.)
+patientSchema.index({ dentist_id: 1, status: 1 });
+
+// Optimizes clinic-based patient grouping
+patientSchema.index({ dentist_id: 1, clinic_id: 1 });
 
 module.exports = mongoose.model('Patient', patientSchema);
 

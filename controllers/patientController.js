@@ -37,21 +37,75 @@ const createPatient = asyncHandler(async (req, res) => {
 
 
 // ── Get All Patients (paginated) ──────────────
-// GET /api/patients?page=1&limit=10
+// GET /api/patients?page=1&limit=10&search=&status=&clinic_id=&sortBy=
 const getPatients = asyncHandler(async (req, res) => {
   const page = Math.max(parseInt(req.query.page, 10) || 1, 1);
   const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 10, 1), 100);
   const skip = (page - 1) * limit;
 
-  // ── Build filter ──────────────────────────────
-  const filter = { dentist_id: req.dentist._id };
-  if (req.query.clinic_id) {
-    filter.clinic_id = req.query.clinic_id;
+  const { search, status, clinic_id, sortBy, dateFrom, dateTo } = req.query;
+
+  // ── Build Filter ──────────────────────────────
+  const filter = { dentist_id: req.dentist._id, isDeleted: { $ne: true } };
+
+  if (clinic_id) {
+    filter.clinic_id = clinic_id;
   }
+
+  if (status && status !== 'All Patients') {
+    filter.status = status;
+  }
+
+  if (dateFrom || dateTo) {
+    filter.createdAt = {};
+    if (dateFrom && dateTo) {
+      // Range: from dateFrom 00:00 to dateTo 23:59
+      const from = new Date(dateFrom);
+      from.setHours(0, 0, 0, 0);
+      filter.createdAt.$gte = from;
+
+      const to = new Date(dateTo);
+      to.setHours(23, 59, 59, 999);
+      filter.createdAt.$lte = to;
+    } else if (dateFrom) {
+      // Single day: from dateFrom 00:00 to dateFrom 23:59
+      const from = new Date(dateFrom);
+      from.setHours(0, 0, 0, 0);
+      filter.createdAt.$gte = from;
+
+      const to = new Date(dateFrom);
+      to.setHours(23, 59, 59, 999);
+      filter.createdAt.$lte = to;
+    } else if (dateTo) {
+      // Until day: from beginning of time to dateTo 23:59
+      const to = new Date(dateTo);
+      to.setHours(23, 59, 59, 999);
+      filter.createdAt.$lte = to;
+    }
+  }
+
+  if (search) {
+    const searchRegex = new RegExp(search, 'i');
+    filter.$or = [
+      { name: searchRegex },
+      { phone: searchRegex },
+      { phone2: searchRegex },
+      { address: searchRegex },
+      { job: searchRegex },
+      { insuranceCompany: searchRegex },
+      { medical_history: { $elemMatch: { $regex: searchRegex } } }
+    ];
+  }
+
+  // ── Build Sort ──────────────────────────────
+  let sort = { createdAt: -1 }; // Default
+  if (sortBy === 'name') sort = { name: 1 };
+  else if (sortBy === 'age_low') sort = { age: 1, dateOfBirth: -1 };
+  else if (sortBy === 'age_high') sort = { age: -1, dateOfBirth: 1 };
 
   const [patients, total] = await Promise.all([
     Patient.find(filter)
-      .sort({ createdAt: -1 })
+      .sort(sort)
       .skip(skip)
       .limit(limit)
       .populate('clinic_id', 'name default_commission_percentage')
@@ -74,6 +128,7 @@ const getPatientById = asyncHandler(async (req, res) => {
   const patient = await Patient.findOne({
     _id: req.params.id,
     dentist_id: req.dentist._id,
+    isDeleted: { $ne: true },
   }).populate('clinic_id', 'name default_commission_percentage');
 
   if (!patient) {
@@ -155,10 +210,17 @@ const updatePatient = asyncHandler(async (req, res) => {
 // ── Delete Patient ────────────────────────────
 // DELETE /api/patients/:id
 const deletePatient = asyncHandler(async (req, res) => {
-  const patient = await Patient.findOneAndDelete({
-    _id: req.params.id,
-    dentist_id: req.dentist._id,
-  });
+  const patient = await Patient.findOneAndUpdate(
+    {
+      _id: req.params.id,
+      dentist_id: req.dentist._id,
+      isDeleted: { $ne: true },
+    },
+    {
+      $set: { isDeleted: true, deletedAt: new Date() },
+    },
+    { new: true }
+  );
 
   if (!patient) {
     res.status(404);

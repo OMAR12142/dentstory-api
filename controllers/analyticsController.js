@@ -3,6 +3,7 @@ const mongoose = require('mongoose');
 const Session = require('../models/Session');
 const Clinic = require('../models/Clinic');
 const Patient = require('../models/Patient');
+const { analyticsCache } = require('../utils/cache');
 
 // ── Helper: Calculate Date Range ──────────────
 const getDateRange = (timeframe) => {
@@ -37,6 +38,11 @@ const getDashboardStats = asyncHandler(async (req, res) => {
   if (!dentistId) {
     return res.status(401).json({ error: 'Dentist ID required' });
   }
+
+  // ── CACHE CHECK ───────────────────────────
+  const cacheKey = `dash_${dentistId}_${timeframe}`;
+  const cachedData = analyticsCache.get(cacheKey);
+  if (cachedData) return res.json(cachedData);
 
   const { startDate, endDate } = getDateRange(timeframe);
 
@@ -100,7 +106,7 @@ const getDashboardStats = asyncHandler(async (req, res) => {
     status: 'Active',
   });
 
-  res.json({
+  const responseData = {
     timeframe,
     period: {
       start: startDate.toISOString(),
@@ -113,7 +119,12 @@ const getDashboardStats = asyncHandler(async (req, res) => {
       activePatients,
     },
     earnings: earningsData,
-  });
+  };
+
+  // Cache for 300 seconds (5 minutes)
+  analyticsCache.set(cacheKey, responseData, 300);
+
+  res.json(responseData);
 });
 
 // ── Get Monthly Earnings (deprecated - use getDashboardStats) ──────────────────────
@@ -186,6 +197,11 @@ const getTreatmentDistribution = asyncHandler(async (req, res) => {
 
   const dentistId = req.dentist._id;
 
+  // ── CACHE CHECK ───────────────────────────
+  const cacheKey = `treat_${dentistId}_${filterType}_${year}_${customStart}_${customEnd}`;
+  const cachedData = analyticsCache.get(cacheKey);
+  if (cachedData) return res.json(cachedData);
+
   // SECURITY: Filter clinics owned by the dentist
   const dentistClinics = await Clinic.find({ dentist_id: dentistId }).select('_id').lean();
   const clinicIds = dentistClinics.map((c) => c._id);
@@ -237,14 +253,17 @@ const getTreatmentDistribution = asyncHandler(async (req, res) => {
     { $sort: { count: -1 } },
   ]);
 
-  res.json({
+  const responseData = {
     filterType,
     treatmentDistribution,
-  });
+  };
+
+  // Cache for 300 seconds
+  analyticsCache.set(cacheKey, responseData, 300);
+
+  res.json(responseData);
 });
 
-// ── Get Historical Earnings Analytics ─────────────────────
-// GET /api/analytics/earnings-history?year=2026&month=3
 // ── Get Historical Earnings Analytics ─────────────────────
 // GET /api/analytics/earnings-history?filterType=yearly|all|custom&year=2026&month=3&startDate=2024-01-01&endDate=2024-12-31
 const getEarningsHistory = asyncHandler(async (req, res) => {
@@ -261,6 +280,11 @@ const getEarningsHistory = asyncHandler(async (req, res) => {
   if (!dentistId) {
     return res.status(401).json({ error: 'Dentist ID required' });
   }
+
+  // ── CACHE CHECK ───────────────────────────
+  const cacheKey = `hist_${dentistId}_${filterType}_${year}_${month}_${customStart}_${customEnd}`;
+  const cachedData = analyticsCache.get(cacheKey);
+  if (cachedData) return res.json(cachedData);
 
   // SECURITY: Always filter by dentist_id
   const dentistClinics = await Clinic.find({ dentist_id: dentistId })
@@ -352,7 +376,6 @@ const getEarningsHistory = asyncHandler(async (req, res) => {
   }
 
   // 3. Get monthly breakdown (if specific month OR if range is small)
-  // For 'yearly', we use selectedMonth. For other types, we might just use the whole range breakdown.
   let breakdownMatch = { ...dateMatch };
   if (filterType === 'yearly' && selectedMonth) {
     breakdownMatch = {
@@ -406,7 +429,7 @@ const getEarningsHistory = asyncHandler(async (req, res) => {
   const totalSessions = formattedTrend.reduce((sum, m) => sum + m.sessions, 0);
   const periodEarnings = monthlyBreakdown.reduce((sum, m) => sum + m.earnings, 0);
 
-  res.json({
+  const responseData = {
     filterType,
     summary: {
       totalYearlyEarnings: Math.round(totalEarnings * 100) / 100,
@@ -415,7 +438,12 @@ const getEarningsHistory = asyncHandler(async (req, res) => {
     },
     yearlyTrend: formattedTrend,
     monthlyBreakdown,
-  });
+  };
+
+  // Cache for 300 seconds
+  analyticsCache.set(cacheKey, responseData, 300);
+
+  res.json(responseData);
 });
 
 module.exports = { getDashboardStats, getMonthlyEarnings, getTreatmentDistribution, getEarningsHistory };

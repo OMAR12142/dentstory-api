@@ -43,4 +43,7 @@ const clinicSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
+// ── Performance Indexes ───────────────────────
+clinicSchema.index({ dentist_id: 1 });
+
 module.exports = mongoose.model('Clinic', clinicSchema);

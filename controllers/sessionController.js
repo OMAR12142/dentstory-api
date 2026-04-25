@@ -1,3 +1,4 @@
+const mongoose = require('mongoose');
 const asyncHandler = require('express-async-handler');
 const Session = require('../models/Session');
 const Clinic = require('../models/Clinic');
@@ -29,6 +30,10 @@ const createSession = asyncHandler(async (req, res) => {
   let clinic = patient.clinic_id; // populated doc or null
 
   if (!clinic && req.body.clinic_id) {
+    if (!mongoose.Types.ObjectId.isValid(req.body.clinic_id)) {
+      res.status(400);
+      throw new Error('Invalid clinic ID provided');
+    }
     clinic = await Clinic.findById(req.body.clinic_id);
     if (!clinic || clinic.dentist_id.toString() !== req.dentist._id.toString()) {
       res.status(403);
@@ -107,17 +112,61 @@ const getSessionsByPatient = asyncHandler(async (req, res) => {
   // 2. Query sessions by both patient_id AND dentist_id for strict ownership.
   // Patient ownership is already verified above, but we also enforce dentist_id
   // to ensure legacy sessions without dentist_id are properly migrated.
-  const sessions = await Session.find({ patient_id, dentist_id: req.dentist._id })
-  .populate('clinic_id', 'name') // helpful for the frontend to show clinic name
-  .sort({ date: -1 });
+  const page = parseInt(req.query.page) || 1;
+  const limit = parseInt(req.query.limit) || 10;
+  const skip = (page - 1) * limit;
 
-  res.json({ sessions });
+  const query = { 
+    patient_id, 
+    dentist_id: req.dentist._id,
+    isDeleted: { $ne: true } 
+  };
+
+  const [sessions, total, stats] = await Promise.all([
+    Session.find(query)
+      .populate('clinic_id', 'name')
+      .sort({ date: -1 })
+      .skip(skip)
+      .limit(limit),
+    Session.countDocuments(query),
+    Session.aggregate([
+      { 
+        $match: { 
+          patient_id: new mongoose.Types.ObjectId(patient_id), 
+          dentist_id: req.dentist._id,
+          isDeleted: { $ne: true } 
+        } 
+      },
+      {
+        $group: {
+          _id: null,
+          total_cost: { $sum: "$total_cost" },
+          total_paid: { $sum: "$amount_paid" },
+          total_cut: { $sum: "$dentist_cut" }
+        }
+      }
+    ])
+  ]);
+
+  const financialSummary = stats[0] || { total_cost: 0, total_paid: 0, total_cut: 0 };
+
+  res.json({ 
+    sessions,
+    page,
+    pages: Math.ceil(total / limit),
+    total,
+    financialSummary
+  });
 });
 
 // ── Update Session ────────────────────────────
 // PUT /api/sessions/:id
 const updateSession = asyncHandler(async (req, res) => {
-  const session = await Session.findOne({ _id: req.params.id, dentist_id: req.dentist._id });
+  const session = await Session.findOne({ 
+    _id: req.params.id, 
+    dentist_id: req.dentist._id,
+    isDeleted: { $ne: true }
+  });
 
   if (!session) {
     res.status(404);
@@ -135,20 +184,33 @@ const updateSession = asyncHandler(async (req, res) => {
 
   // Re-calculate dentist_cut if total_cost or clinic_id changed
   const clinic_id = req.body.clinic_id || session.clinic_id;
-  const total_cost =
-    req.body.total_cost !== undefined
-      ? parseFloat(req.body.total_cost)
-      : session.total_cost;
-  const amount_paid =
-    req.body.amount_paid !== undefined
-      ? parseFloat(req.body.amount_paid)
-      : session.amount_paid;
+  
+  // Sanitize numeric inputs from multipart/form-data strings
+  let total_cost = session.total_cost;
+  if (req.body.total_cost !== undefined) {
+    const parsed = parseFloat(req.body.total_cost);
+    total_cost = isNaN(parsed) ? 0 : parsed;
+    req.body.total_cost = total_cost; // Ensure numeric value for DB
+  }
+
+  let amount_paid = session.amount_paid;
+  if (req.body.amount_paid !== undefined) {
+    const parsed = parseFloat(req.body.amount_paid);
+    amount_paid = isNaN(parsed) ? 0 : parsed;
+    req.body.amount_paid = amount_paid; // Ensure numeric value for DB
+  }
 
   if (
     req.body.total_cost !== undefined ||
     req.body.clinic_id !== undefined ||
     req.body.patient_id !== undefined
   ) {
+    // Basic ID validation to prevent 500 CastError
+    if (!mongoose.Types.ObjectId.isValid(clinic_id)) {
+      res.status(400);
+      throw new Error('Invalid clinic ID provided');
+    }
+
     const clinic = await Clinic.findById(clinic_id);
     if (!clinic || clinic.dentist_id.toString() !== req.dentist._id.toString()) {
       res.status(403);
@@ -221,7 +283,17 @@ const updateSession = asyncHandler(async (req, res) => {
 // ── Delete Session ────────────────────────────
 // DELETE /api/sessions/:id
 const deleteSession = asyncHandler(async (req, res) => {
-  const session = await Session.findOneAndDelete({ _id: req.params.id, dentist_id: req.dentist._id });
+  const session = await Session.findOneAndUpdate(
+    { 
+      _id: req.params.id, 
+      dentist_id: req.dentist._id,
+      isDeleted: { $ne: true }
+    },
+    { 
+      $set: { isDeleted: true, deletedAt: new Date() }
+    },
+    { new: true }
+  );
 
   if (!session) {
     res.status(404);
@@ -245,6 +317,7 @@ const getUpcomingAppointments = asyncHandler(async (req, res) => {
   const appointments = await Session.find({
     clinic_id: { $in: clinicIds },
     next_appointment: { $gte: now },
+    isDeleted: { $ne: true },
   })
     .populate('patient_id', 'name phone') // Get patient name and phone
     .sort({ next_appointment: 1 }) // Ascending: closest dates first

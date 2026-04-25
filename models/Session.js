@@ -56,6 +56,15 @@ const sessionSchema = new mongoose.Schema(
       type: [String],
       default: [],
     },
+    isDeleted: {
+      type: Boolean,
+      default: false,
+      index: true,
+    },
+    deletedAt: {
+      type: Date,
+      default: null,
+    },
   },
   { timestamps: true }
 );
@@ -65,5 +74,15 @@ sessionSchema.pre('save', function (next) {
   this.remaining_balance = this.total_cost - this.amount_paid;
   next();
 });
+
+// ── Performance Indexes ───────────────────────
+// Optimizes dashboard analytics and trend charts
+sessionSchema.index({ dentist_id: 1, date: -1 });
+
+// Optimizes patient treatment timeline
+sessionSchema.index({ patient_id: 1, date: -1 });
+
+// Optimizes clinic-specific stats
+sessionSchema.index({ clinic_id: 1 });
 
 module.exports = mongoose.model('Session', sessionSchema);

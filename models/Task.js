@@ -35,8 +35,21 @@ const taskSchema = new mongoose.Schema(
       type: Date,
       default: null,
     },
+    isDeleted: {
+      type: Boolean,
+      default: false,
+      index: true,
+    },
+    deletedAt: {
+      type: Date,
+      default: null,
+    },
   },
   { timestamps: true }
 );
+
+// ── Performance Indexes ───────────────────────
+// Optimizes filtering of active vs completed tasks
+taskSchema.index({ dentist_id: 1, isCompleted: 1 });
 
 module.exports = mongoose.model('Task', taskSchema);

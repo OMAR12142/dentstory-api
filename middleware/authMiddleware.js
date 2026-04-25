@@ -1,12 +1,13 @@
 const jwt = require('jsonwebtoken');
 const asyncHandler = require('express-async-handler');
 const Dentist = require('../models/Dentist');
+const { analyticsCache } = require('../utils/cache');
 
 /**
  * Protect routes – verifies the Bearer access-token from the
  * Authorization header and attaches the dentist to `req.dentist`.
  */
-const protect = asyncHandler(async (req, _res, next) => {
+const protect = asyncHandler(async (req, res, next) => {
   const authHeader = req.headers.authorization;
 
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
@@ -19,7 +20,20 @@ const protect = asyncHandler(async (req, _res, next) => {
 
   try {
     const decoded = jwt.verify(token, process.env.ACCESS_TOKEN_SECRET);
-    req.dentist = await Dentist.findById(decoded.id).select('-password');
+    
+    // ── Mid-Tier Cache Lookup ────────────────
+    const cacheKey = `prof_${decoded.id}`;
+    let dentist = analyticsCache.get(cacheKey);
+
+    if (!dentist) {
+      dentist = await Dentist.findById(decoded.id).select('-password');
+      if (dentist) {
+        // Cache profile for 2 minutes to reduce IO
+        analyticsCache.set(cacheKey, dentist, 120);
+      }
+    }
+
+    req.dentist = dentist;
 
     if (!req.dentist) {
       const err = new Error('Not authorised — dentist not found');

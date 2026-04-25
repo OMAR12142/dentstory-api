@@ -18,6 +18,7 @@ const analyticsRoutes = require('./routes/analyticsRoutes');
 const taskRoutes = require('./routes/taskRoutes');
 const adminRoutes = require('./routes/adminRoutes');
 const insuranceRoutes = require('./routes/insuranceRoutes');
+const portfolioRoutes = require('./routes/portfolioRoutes');
 
 // ── App initialisation ────────────────────────
 const app = express();
@@ -56,6 +57,7 @@ app.use('/api/analytics', analyticsRoutes);
 app.use('/api/tasks', taskRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/insurance', insuranceRoutes);
+app.use('/api/portfolio', portfolioRoutes);
 
 // ── 404 handler ───────────────────────────────
 app.use((_req, res) => {

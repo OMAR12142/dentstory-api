@@ -5,7 +5,10 @@ const Clinic = require('../models/Clinic');
 // ── Get all tasks for logged-in dentist ────
 // GET /api/tasks
 const getTasks = asyncHandler(async (req, res) => {
-  const tasks = await Task.find({ dentist_id: req.dentist._id })
+  const tasks = await Task.find({ 
+    dentist_id: req.dentist._id, 
+    isDeleted: { $ne: true } 
+  })
     .populate('clinic_id', 'name')
     .populate('patient_id', 'name phone')
     .sort({ createdAt: -1 });
@@ -52,7 +55,7 @@ const createTask = asyncHandler(async (req, res) => {
 // ── Toggle task completion ─────────────────
 // PATCH /api/tasks/:id
 const toggleTaskCompletion = asyncHandler(async (req, res) => {
-  const task = await Task.findById(req.params.id);
+  const task = await Task.findOne({ _id: req.params.id, isDeleted: { $ne: true } });
 
   if (!task) {
     res.status(404);
@@ -78,7 +81,7 @@ const toggleTaskCompletion = asyncHandler(async (req, res) => {
 // ── Update task ────────────────────────────
 // PUT /api/tasks/:id
 const updateTask = asyncHandler(async (req, res) => {
-  const task = await Task.findById(req.params.id);
+  const task = await Task.findOne({ _id: req.params.id, isDeleted: { $ne: true } });
 
   if (!task) {
     res.status(404);
@@ -127,7 +130,9 @@ const deleteTask = asyncHandler(async (req, res) => {
     throw new Error('You do not have access to this task');
   }
 
-  await Task.findByIdAndDelete(req.params.id);
+  task.isDeleted = true;
+  task.deletedAt = new Date();
+  await task.save();
 
   res.json({ message: 'Task deleted successfully' });
 });

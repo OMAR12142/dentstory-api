@@ -15,7 +15,9 @@ const generateRefreshToken = (id, role) =>
 
 const REFRESH_COOKIE_OPTIONS = {
   httpOnly: true,
-  secure: process.env.NODE_ENV === 'production',
+  // Force secure: true for Vercel/Production to ensure Safari (iOS) accepts the cookie.
+  // Safari blocks 'sameSite: none' cookies if 'secure' is false.
+  secure: true, 
   sameSite: 'none',
   maxAge: 30 * 24 * 60 * 60 * 1000, // 30 days
 };
@@ -49,7 +51,9 @@ const register = asyncHandler(async (req, res) => {
     _id: dentist._id,
     name: dentist.name,
     email: dentist.email,
+    phone: dentist.phone,
     role: dentist.role,
+    profilePhoto: dentist.profilePhoto,
     accessToken,
   });
 });
@@ -80,7 +84,9 @@ const login = asyncHandler(async (req, res) => {
     _id: dentist._id,
     name: dentist.name,
     email: dentist.email,
+    phone: dentist.phone,
     role: dentist.role,
+    profilePhoto: dentist.profilePhoto,
     accessToken,
   });
 });
@@ -169,9 +175,146 @@ const getMe = asyncHandler(async (req, res) => {
     _id: dentist._id,
     name: dentist.name,
     email: dentist.email,
+    phone: dentist.phone,
     role: dentist.role,
     status: dentist.status,
+    profilePhoto: dentist.profilePhoto,
   });
 });
 
-module.exports = { register, login, refreshAccessToken, logout, getMe };
+// ── Update Profile ────────────────────────────
+// PUT /api/auth/profile
+const updateProfile = asyncHandler(async (req, res) => {
+  const dentist = await Dentist.findById(req.dentist._id);
+  if (!dentist) {
+    res.status(404);
+    throw new Error('User not found');
+  }
+
+  // Update allowed fields only (Email is read-only per requirement)
+  dentist.name = req.body.name || dentist.name;
+  dentist.phone = req.body.phone || dentist.phone;
+
+  const updatedDentist = await dentist.save();
+
+  // Clear cache to ensure MainLayout and other components get fresh data
+  const { analyticsCache } = require('../utils/cache');
+  analyticsCache.del(`prof_${dentist._id}`);
+
+  res.json({
+    _id: updatedDentist._id,
+    name: updatedDentist.name,
+    email: updatedDentist.email,
+    phone: updatedDentist.phone,
+    role: updatedDentist.role,
+    profilePhoto: updatedDentist.profilePhoto,
+  });
+});
+
+// ── Update Password ───────────────────────────
+// PUT /api/auth/password
+const updatePassword = asyncHandler(async (req, res) => {
+  const { currentPassword, newPassword } = req.body;
+
+  if (!newPassword || newPassword.length < 6) {
+    res.status(400);
+    throw new Error('New password must be at least 6 characters');
+  }
+
+  const dentist = await Dentist.findById(req.dentist._id).select('+password');
+  
+  // Verify current password
+  const isMatch = await dentist.matchPassword(currentPassword);
+  if (!isMatch) {
+    res.status(401);
+    throw new Error('Current password is incorrect');
+  }
+
+  // Update password field – Mongoose pre-save hook will hash it
+  dentist.password = newPassword;
+  
+  // Optional: Invalidate other sessions (clear refresh tokens)
+  // dentist.refreshTokens = []; 
+  
+  await dentist.save();
+
+  res.json({ message: 'Password updated successfully' });
+});
+
+// ── Upload Profile Photo ──────────────────────
+// POST /api/auth/photo
+const uploadPhoto = asyncHandler(async (req, res) => {
+  if (!req.file) {
+    res.status(400);
+    throw new Error('No image file provided');
+  }
+
+  const dentist = await Dentist.findById(req.dentist._id);
+  if (!dentist) {
+    res.status(404);
+    throw new Error('User not found');
+  }
+
+  // Delete old photo from Cloudinary if it exists
+  if (dentist.profilePhoto?.publicId) {
+    const cloudinary = require('../config/cloudinary');
+    await cloudinary.uploader.destroy(dentist.profilePhoto.publicId);
+  }
+
+  // Save new photo
+  dentist.profilePhoto = {
+    url: req.file.path,
+    publicId: req.file.filename,
+  };
+  await dentist.save({ validateModifiedOnly: true });
+
+  // Clear cache
+  const { analyticsCache } = require('../utils/cache');
+  analyticsCache.del(`prof_${dentist._id}`);
+
+  res.json({
+    _id: dentist._id,
+    name: dentist.name,
+    email: dentist.email,
+    phone: dentist.phone,
+    role: dentist.role,
+    profilePhoto: dentist.profilePhoto,
+  });
+});
+
+// ── Remove Profile Photo ──────────────────────
+// DELETE /api/auth/photo
+const removePhoto = asyncHandler(async (req, res) => {
+  const dentist = await Dentist.findById(req.dentist._id);
+  if (!dentist) {
+    res.status(404);
+    throw new Error('User not found');
+  }
+
+  // Delete from Cloudinary
+  if (dentist.profilePhoto?.publicId) {
+    const cloudinary = require('../config/cloudinary');
+    await cloudinary.uploader.destroy(dentist.profilePhoto.publicId);
+  }
+
+  dentist.profilePhoto = { url: '', publicId: '' };
+  await dentist.save({ validateModifiedOnly: true });
+
+  // Clear cache
+  const { analyticsCache } = require('../utils/cache');
+  analyticsCache.del(`prof_${dentist._id}`);
+
+  res.json({ message: 'Profile photo removed' });
+});
+
+module.exports = {
+  register,
+  login,
+  refreshAccessToken,
+  logout,
+  getMe,
+  updateProfile,
+  updatePassword,
+  uploadPhoto,
+  removePhoto,
+};
