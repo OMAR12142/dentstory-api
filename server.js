@@ -19,6 +19,7 @@ const taskRoutes = require('./routes/taskRoutes');
 const adminRoutes = require('./routes/adminRoutes');
 const insuranceRoutes = require('./routes/insuranceRoutes');
 const portfolioRoutes = require('./routes/portfolioRoutes');
+const announcementRoutes = require('./routes/announcementRoutes');
 
 // ── App initialisation ────────────────────────
 const app = express();
@@ -58,6 +59,7 @@ app.use('/api/tasks', taskRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/insurance', insuranceRoutes);
 app.use('/api/portfolio', portfolioRoutes);
+app.use('/api/announcements', announcementRoutes);
 
 // ── 404 handler ───────────────────────────────
 app.use((_req, res) => {

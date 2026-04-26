@@ -9,13 +9,25 @@ const {
   getDentistProfile,
   resetDentistPassword,
 } = require('../controllers/adminController');
+const {
+  createAnnouncement,
+  getAllAnnouncements,
+  toggleAnnouncement,
+  deleteAnnouncement,
+} = require('../controllers/announcementController');
 
 // ── Apply auth + admin guard to every route in this file ──
 router.use(protect);
 router.use(isAdmin);
 
 // ── Admin endpoints ───────────────────────────────────────
-// GET /api/admin/stats     → platform-wide statistics
+// Announcements
+router.get('/announcements', getAllAnnouncements);
+router.post('/announcements', createAnnouncement);
+router.patch('/announcements/:id/toggle', toggleAnnouncement);
+router.delete('/announcements/:id', deleteAnnouncement);
+
+// Stats & Users
 router.get('/stats', getPlatformStats);
 
 // GET /api/admin/revenue   → revenue dashboard data
