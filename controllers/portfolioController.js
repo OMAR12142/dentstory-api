@@ -73,6 +73,7 @@ const getPublicPortfolio = asyncHandler(async (req, res) => {
     title: c.title,
     description: c.description,
     category: c.category,
+    treatmentType: c.treatmentType || 'General',
     coverImage: c.coverImage,
     selectedImages: c.selectedImages,
     publishedAt: c.publishedAt,
@@ -143,6 +144,7 @@ const getPublicCase = asyncHandler(async (req, res) => {
       title: caseItem.title,
       description: caseItem.description,
       category: caseItem.category,
+      treatmentType: caseItem.treatmentType || 'General',
       coverImage: caseItem.coverImage,
       selectedImages: caseItem.selectedImages,
       publishedAt: caseItem.publishedAt,
@@ -272,7 +274,7 @@ const publishCase = asyncHandler(async (req, res) => {
     throw new Error('No portfolio found. Create one first.');
   }
 
-  const { title, description, category, selectedImages, coverImage } = req.body;
+  const { title, description, category, treatmentType, selectedImages, coverImage } = req.body;
 
   if (!title) {
     res.status(400);
@@ -294,6 +296,7 @@ const publishCase = asyncHandler(async (req, res) => {
     title,
     description: description || '',
     category: category || '',
+    treatmentType: treatmentType || 'General',
     selectedImages,
     coverImage: coverImage || selectedImages[0],
     order: portfolio.publishedCases.length,
@@ -312,26 +315,32 @@ const publishCase = asyncHandler(async (req, res) => {
  * Edit a published case's title, description, category.
  */
 const editCase = asyncHandler(async (req, res) => {
-  const portfolio = await Portfolio.findOne({ dentist_id: req.dentist._id });
-  if (!portfolio) {
-    res.status(404);
-    throw new Error('No portfolio found');
+  try {
+    const portfolio = await Portfolio.findOne({ dentist_id: req.dentist._id });
+    if (!portfolio) {
+      res.status(404);
+      throw new Error('No portfolio found');
+    }
+
+    const caseItem = portfolio.publishedCases.id(req.params.caseId);
+    if (!caseItem) {
+      res.status(404);
+      throw new Error('Case not found');
+    }
+
+    if (req.body.title !== undefined) caseItem.title = req.body.title;
+    if (req.body.description !== undefined) caseItem.description = req.body.description;
+    if (req.body.category !== undefined) caseItem.category = req.body.category;
+    if (req.body.treatmentType !== undefined) caseItem.treatmentType = req.body.treatmentType;
+    if (req.body.selectedImages !== undefined) caseItem.selectedImages = req.body.selectedImages;
+    if (req.body.coverImage !== undefined) caseItem.coverImage = req.body.coverImage;
+
+    await portfolio.save();
+    res.json(caseItem);
+  } catch (error) {
+    console.error('❌ PORTFOLIO EDIT ERROR:', error);
+    res.status(error.statusCode || 500).json({ message: error.message });
   }
-
-  const caseItem = portfolio.publishedCases.id(req.params.caseId);
-  if (!caseItem) {
-    res.status(404);
-    throw new Error('Case not found');
-  }
-
-  if (req.body.title !== undefined) caseItem.title = req.body.title;
-  if (req.body.description !== undefined) caseItem.description = req.body.description;
-  if (req.body.category !== undefined) caseItem.category = req.body.category;
-  if (req.body.selectedImages !== undefined) caseItem.selectedImages = req.body.selectedImages;
-  if (req.body.coverImage !== undefined) caseItem.coverImage = req.body.coverImage;
-
-  await portfolio.save();
-  res.json(caseItem);
 });
 
 /**

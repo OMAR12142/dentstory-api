@@ -30,6 +30,11 @@ const publishedCaseSchema = new mongoose.Schema(
       trim: true,
       default: '',
     },
+    treatmentType: {
+      type: String,
+      trim: true,
+      default: 'General',
+    },
     // Which media_urls from the session to display (indexes or full URLs)
     selectedImages: {
       type: [String],
