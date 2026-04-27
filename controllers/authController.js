@@ -17,7 +17,7 @@ const REFRESH_COOKIE_OPTIONS = {
   httpOnly: true,
   // Force secure: true for Vercel/Production to ensure Safari (iOS) accepts the cookie.
   // Safari blocks 'sameSite: none' cookies if 'secure' is false.
-  secure: true, 
+  secure: true,
   sameSite: 'none',
   maxAge: 30 * 24 * 60 * 60 * 1000, // 30 days
 };
@@ -222,7 +222,7 @@ const updatePassword = asyncHandler(async (req, res) => {
   }
 
   const dentist = await Dentist.findById(req.dentist._id).select('+password');
-  
+
   // Verify current password
   const isMatch = await dentist.matchPassword(currentPassword);
   if (!isMatch) {
@@ -232,10 +232,10 @@ const updatePassword = asyncHandler(async (req, res) => {
 
   // Update password field – Mongoose pre-save hook will hash it
   dentist.password = newPassword;
-  
+
   // Optional: Invalidate other sessions (clear refresh tokens)
   // dentist.refreshTokens = []; 
-  
+
   await dentist.save();
 
   res.json({ message: 'Password updated successfully' });
