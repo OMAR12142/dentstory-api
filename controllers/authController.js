@@ -3,7 +3,7 @@ const asyncHandler = require('express-async-handler');
 const Dentist = require('../models/Dentist');
 const RefreshToken = require('../models/RefreshToken');
 const { OAuth2Client } = require('google-auth-library');
-const client = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
+const client = new OAuth2Client(process.env.VITE_GOOGLE_CLIENT_ID?.trim());
 
 // ── Helpers ───────────────────────────────────
 const generateAccessToken = (id, role) =>
@@ -360,41 +360,34 @@ const googleLogin = asyncHandler(async (req, res) => {
     throw new Error('Google token is required');
   }
 
+  console.log('DEBUG: VITE_GOOGLE_CLIENT_ID starts with:', (process.env.VITE_GOOGLE_CLIENT_ID || 'UNDEFINED').substring(0, 10));
+  console.log('DEBUG: Received googleToken starts with:', (googleToken || 'EMPTY').substring(0, 10));
+
   let email, name, picture;
 
   try {
-    // Try as ID Token first (original behavior)
     const ticket = await client.verifyIdToken({
       idToken: googleToken,
-      audience: process.env.GOOGLE_CLIENT_ID,
+      audience: process.env.VITE_GOOGLE_CLIENT_ID?.trim(),
     });
     const payload = ticket.getPayload();
     email = payload.email;
     name = payload.name;
     picture = payload.picture;
   } catch (err) {
-    // If ID token fails, try as Access Token using getTokenInfo
+    console.error('❌ Google Token Verification Error:', err.message);
+    
+    // Fallback: try to fetch user info if it's an access token instead of id token
     try {
-      const tokenInfo = await client.getTokenInfo(googleToken);
-
-      // getTokenInfo returns basic info, but for name/picture we might still need userinfo API
-      // However, email is available in tokenInfo.
-      if (tokenInfo.email) {
-        email = tokenInfo.email;
-        // For name and picture, if not in tokenInfo, we'll try to get them from payload if possible
-        // but tokenInfo usually has 'email' and 'sub'. 
-        // If we want more info, we have to use the userinfo endpoint.
-        // Let's use the userinfo endpoint but with the library's request method for safety.
-        const url = 'https://www.googleapis.com/oauth2/v3/userinfo';
-        const response = await client.request({ url, headers: { Authorization: `Bearer ${googleToken}` } });
-
-        email = response.data.email;
-        name = response.data.name;
-        picture = response.data.picture;
-      } else {
-        throw new Error('Invalid Google token');
-      }
-    } catch (tokenErr) {
+      client.setCredentials({ access_token: googleToken });
+      const response = await client.request({
+        url: 'https://www.googleapis.com/oauth2/v3/userinfo',
+      });
+      email = response.data.email;
+      name = response.data.name;
+      picture = response.data.picture;
+    } catch (fallbackErr) {
+      console.error('❌ Google Fallback Error:', fallbackErr.message);
       res.status(400);
       throw new Error('Invalid Google token');
     }
