@@ -3,6 +3,7 @@ const asyncHandler = require('express-async-handler');
 const Session = require('../models/Session');
 const Clinic = require('../models/Clinic');
 const Patient = require('../models/Patient');
+const Appointment = require('../models/Appointment');
 
 // ── Create Session ────────────────────────────
 // POST /api/sessions  (multipart/form-data)
@@ -15,6 +16,7 @@ const createSession = asyncHandler(async (req, res) => {
     total_cost,
     amount_paid,
     next_appointment,
+    linked_appointment_id,
   } = req.body;
 
   // 1. Fetch patient and verify ownership
@@ -88,7 +90,68 @@ const createSession = asyncHandler(async (req, res) => {
     next_appointment,
   });
 
-  res.status(201).json(session);
+  // Auto-complete the linked appointment
+  if (linked_appointment_id) {
+    await Appointment.findOneAndUpdate(
+      { _id: linked_appointment_id, dentist_id: req.dentist._id },
+      { $set: { status: 'completed' } }
+    );
+  }
+
+  // Sync with new Appointment calendar system
+  let conflictWarning = false;
+  if (next_appointment) {
+    const aptDate = new Date(next_appointment);
+    if (!isNaN(aptDate.getTime())) {
+      const dateStr = aptDate.toISOString().split('T')[0];
+      const hours = aptDate.getHours().toString().padStart(2, '0');
+      const minutes = aptDate.getMinutes().toString().padStart(2, '0');
+      const startTime = `${hours}:${minutes}`;
+
+      const endAptDate = new Date(aptDate.getTime() + 30 * 60000); // 30 min default
+      const endHours = endAptDate.getHours().toString().padStart(2, '0');
+      const endMinutes = endAptDate.getMinutes().toString().padStart(2, '0');
+      const endTime = `${endHours}:${endMinutes}`;
+
+      // Check for conflicts
+      const conflict = await Appointment.findOne({
+        dentist_id: req.dentist._id,
+        date: new Date(dateStr),
+        isDeleted: { $ne: true },
+        status: { $nin: ['cancelled', 'no-show'] },
+        $or: [
+          { startTime: { $lt: endTime }, endTime: { $gt: startTime } }
+        ]
+      });
+
+      if (conflict) {
+        conflictWarning = true;
+      } else {
+        const generatedApt = await Appointment.findOneAndUpdate(
+          {
+            dentist_id: req.dentist._id,
+            patient_id,
+            date: new Date(dateStr),
+            startTime,
+          },
+          {
+            $setOnInsert: {
+              clinic_id: clinic._id,
+              endTime,
+              type: 'follow-up',
+              status: 'scheduled',
+            }
+          },
+          { upsert: true, new: true }
+        );
+        
+        session.generated_appointment_id = generatedApt._id;
+        await session.save();
+      }
+    }
+  }
+
+  res.status(201).json({ session, conflictWarning });
 });
 
 
@@ -116,10 +179,10 @@ const getSessionsByPatient = asyncHandler(async (req, res) => {
   const limit = parseInt(req.query.limit) || 10;
   const skip = (page - 1) * limit;
 
-  const query = { 
-    patient_id, 
+  const query = {
+    patient_id,
     dentist_id: req.dentist._id,
-    isDeleted: { $ne: true } 
+    isDeleted: { $ne: true }
   };
 
   const [sessions, total, stats] = await Promise.all([
@@ -130,12 +193,12 @@ const getSessionsByPatient = asyncHandler(async (req, res) => {
       .limit(limit),
     Session.countDocuments(query),
     Session.aggregate([
-      { 
-        $match: { 
-          patient_id: new mongoose.Types.ObjectId(patient_id), 
+      {
+        $match: {
+          patient_id: new mongoose.Types.ObjectId(patient_id),
           dentist_id: req.dentist._id,
-          isDeleted: { $ne: true } 
-        } 
+          isDeleted: { $ne: true }
+        }
       },
       {
         $group: {
@@ -150,7 +213,7 @@ const getSessionsByPatient = asyncHandler(async (req, res) => {
 
   const financialSummary = stats[0] || { total_cost: 0, total_paid: 0, total_cut: 0 };
 
-  res.json({ 
+  res.json({
     sessions,
     page,
     pages: Math.ceil(total / limit),
@@ -162,8 +225,8 @@ const getSessionsByPatient = asyncHandler(async (req, res) => {
 // ── Update Session ────────────────────────────
 // PUT /api/sessions/:id
 const updateSession = asyncHandler(async (req, res) => {
-  const session = await Session.findOne({ 
-    _id: req.params.id, 
+  const session = await Session.findOne({
+    _id: req.params.id,
     dentist_id: req.dentist._id,
     isDeleted: { $ne: true }
   });
@@ -184,7 +247,7 @@ const updateSession = asyncHandler(async (req, res) => {
 
   // Re-calculate dentist_cut if total_cost or clinic_id changed
   const clinic_id = req.body.clinic_id || session.clinic_id;
-  
+
   // Sanitize numeric inputs from multipart/form-data strings
   let total_cost = session.total_cost;
   if (req.body.total_cost !== undefined) {
@@ -232,7 +295,7 @@ const updateSession = asyncHandler(async (req, res) => {
   // Handle media updates (existing + new)
   if (req.body.existing_media !== undefined || (req.files && req.files.length > 0)) {
     let baseMedia = [];
-    
+
     // If existing_media is provided (even if empty string or empty array), we use it.
     // If it's NOT provided in the request body at all, we fall back to current session state.
     if (req.body.existing_media !== undefined) {
@@ -252,12 +315,12 @@ const updateSession = asyncHandler(async (req, res) => {
 
     const newMediaUrls = req.files ? req.files.map((f) => f.path) : [];
     let combinedMedia = [...baseMedia, ...newMediaUrls];
-    
+
     // Enforce 5 image limit
     if (combinedMedia.length > 5) {
       combinedMedia = combinedMedia.slice(0, 5);
     }
-    
+
     req.body.media_urls = combinedMedia;
   }
 
@@ -277,30 +340,109 @@ const updateSession = asyncHandler(async (req, res) => {
     { new: true, runValidators: true }
   );
 
-  res.json(updatedSession);
+  let conflictWarning = false;
+
+  // Sync with new Appointment calendar system if next_appointment is provided/updated
+  if (req.body.next_appointment !== undefined) {
+    if (!req.body.next_appointment && session.generated_appointment_id) {
+      // next_appointment was cleared -> cancel the generated appointment
+      await Appointment.findByIdAndUpdate(session.generated_appointment_id, { status: 'cancelled' });
+    } else if (req.body.next_appointment) {
+      const aptDate = new Date(req.body.next_appointment);
+      if (!isNaN(aptDate.getTime())) {
+        const dateStr = aptDate.toISOString().split('T')[0];
+        const hours = aptDate.getHours().toString().padStart(2, '0');
+        const minutes = aptDate.getMinutes().toString().padStart(2, '0');
+        const startTime = `${hours}:${minutes}`;
+
+        const endAptDate = new Date(aptDate.getTime() + 30 * 60000);
+        const endHours = endAptDate.getHours().toString().padStart(2, '0');
+        const endMinutes = endAptDate.getMinutes().toString().padStart(2, '0');
+        const endTime = `${endHours}:${endMinutes}`;
+
+        // Check conflict (ignoring the generated appointment itself if it exists)
+        const conflictQuery = {
+          dentist_id: req.dentist._id,
+          date: new Date(dateStr),
+          isDeleted: { $ne: true },
+          status: { $nin: ['cancelled', 'no-show', 'completed'] },
+          $or: [
+            { startTime: { $lt: endTime }, endTime: { $gt: startTime } }
+          ]
+        };
+        if (session.generated_appointment_id) {
+          conflictQuery._id = { $ne: session.generated_appointment_id };
+        }
+
+        const conflict = await Appointment.findOne(conflictQuery);
+
+        if (conflict) {
+          conflictWarning = true;
+        } else {
+          let generatedApt;
+          if (session.generated_appointment_id) {
+            // Update existing
+            generatedApt = await Appointment.findByIdAndUpdate(
+              session.generated_appointment_id,
+              { date: new Date(dateStr), startTime, endTime, status: 'scheduled' },
+              { new: true }
+            );
+          } else {
+            // Create new
+            generatedApt = await Appointment.create({
+              dentist_id: req.dentist._id,
+              patient_id: updatedSession.patient_id,
+              clinic_id: updatedSession.clinic_id,
+              date: new Date(dateStr),
+              startTime,
+              endTime,
+              type: 'follow-up',
+              status: 'scheduled',
+            });
+            updatedSession.generated_appointment_id = generatedApt._id;
+            await updatedSession.save();
+          }
+        }
+      }
+    }
+  }
+
+  res.json({ session: updatedSession, conflictWarning });
 });
 
 // ── Delete Session ────────────────────────────
 // DELETE /api/sessions/:id
 const deleteSession = asyncHandler(async (req, res) => {
-  const session = await Session.findOneAndUpdate(
-    { 
-      _id: req.params.id, 
-      dentist_id: req.dentist._id,
-      isDeleted: { $ne: true }
-    },
-    { 
-      $set: { isDeleted: true, deletedAt: new Date() }
-    },
-    { new: true }
-  );
+  const session = await Session.findOne({
+    _id: req.params.id,
+    dentist_id: req.dentist._id,
+    isDeleted: { $ne: true }
+  });
 
   if (!session) {
     res.status(404);
     throw new Error('Session not found or access denied');
   }
 
-  res.json({ message: 'Session removed successfully' });
+  // Soft delete the session
+  session.isDeleted = true;
+  session.deletedAt = new Date();
+  await session.save();
+
+  // If there's an auto-generated appointment, cancel it
+  if (session.generated_appointment_id) {
+    await Appointment.findOneAndUpdate(
+      { _id: session.generated_appointment_id, dentist_id: req.dentist._id },
+      { 
+        $set: { 
+          status: 'cancelled', 
+          notes: 'Auto-cancelled: Associated clinical session was deleted.' 
+        } 
+      }
+    );
+  }
+
+  res.json({ message: 'Session removed and associated appointment cancelled' });
 });
 
 // ── Get Upcoming Appointments ─────────────────
@@ -326,4 +468,31 @@ const getUpcomingAppointments = asyncHandler(async (req, res) => {
   res.json({ appointments });
 });
 
-module.exports = { createSession, getSessionsByPatient, updateSession, deleteSession, getUpcomingAppointments };
+// ── Get Sessions By Date ──────────────────────
+// GET /api/sessions/by-date?date=2026-04-30
+const getSessionsByDate = asyncHandler(async (req, res) => {
+  const { date } = req.query;
+  if (!date) {
+    res.status(400);
+    throw new Error('date query parameter is required');
+  }
+
+  const dayStart = new Date(date);
+  dayStart.setHours(0, 0, 0, 0);
+  const dayEnd = new Date(date);
+  dayEnd.setHours(23, 59, 59, 999);
+
+  const sessions = await Session.find({
+    dentist_id: req.dentist._id,
+    date: { $gte: dayStart, $lte: dayEnd },
+    isDeleted: { $ne: true },
+  })
+    .populate('patient_id', 'name phone')
+    .populate('clinic_id', 'name')
+    .sort({ date: 1 })
+    .lean();
+
+  res.json(sessions);
+});
+
+module.exports = { createSession, getSessionsByPatient, updateSession, deleteSession, getUpcomingAppointments, getSessionsByDate };

@@ -52,6 +52,10 @@ const sessionSchema = new mongoose.Schema(
     next_appointment: {
       type: Date,
     },
+    generated_appointment_id: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Appointment',
+    },
     treatment_category: {
       type: [String],
       default: [],

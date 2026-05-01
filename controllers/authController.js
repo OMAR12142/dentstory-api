@@ -1,6 +1,9 @@
 const jwt = require('jsonwebtoken');
 const asyncHandler = require('express-async-handler');
 const Dentist = require('../models/Dentist');
+const RefreshToken = require('../models/RefreshToken');
+const { OAuth2Client } = require('google-auth-library');
+const client = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 
 // ── Helpers ───────────────────────────────────
 const generateAccessToken = (id, role) =>
@@ -38,12 +41,17 @@ const register = asyncHandler(async (req, res) => {
   const accessToken = generateAccessToken(dentist._id, dentist.role);
   const refreshToken = generateRefreshToken(dentist._id, dentist.role);
 
-  // Persist refresh token in DB (limit array size to 5 devices max)
-  dentist.refreshTokens.push(refreshToken);
-  if (dentist.refreshTokens.length > 5) {
-    dentist.refreshTokens = dentist.refreshTokens.slice(-5);
-  }
-  await dentist.save({ validateModifiedOnly: true });
+  // Atomic Refresh Token Persistance
+  const expiresAt = new Date();
+  expiresAt.setDate(expiresAt.getDate() + 30); // 30 days matches REFRESH_TOKEN_EXPIRES_IN
+
+  await RefreshToken.create({
+    dentistId: dentist._id,
+    token: refreshToken,
+    expiresAt,
+    userAgent: req.headers['user-agent'],
+    ip: req.ip || req.connection.remoteAddress,
+  });
 
   res.cookie('refreshToken', refreshToken, REFRESH_COOKIE_OPTIONS);
 
@@ -72,11 +80,26 @@ const login = asyncHandler(async (req, res) => {
   const accessToken = generateAccessToken(dentist._id, dentist.role);
   const refreshToken = generateRefreshToken(dentist._id, dentist.role);
 
-  dentist.refreshTokens.push(refreshToken);
-  if (dentist.refreshTokens.length > 5) {
-    dentist.refreshTokens = dentist.refreshTokens.slice(-5);
+  // Manage active sessions (limit to 5 devices)
+  // We delete the oldest tokens if the limit is exceeded
+  const sessionCount = await RefreshToken.countDocuments({ dentistId: dentist._id });
+  if (sessionCount >= 5) {
+    const oldestTokens = await RefreshToken.find({ dentistId: dentist._id })
+      .sort({ createdAt: 1 })
+      .limit(sessionCount - 4);
+    await RefreshToken.deleteMany({ _id: { $in: oldestTokens.map(t => t._id) } });
   }
-  await dentist.save({ validateModifiedOnly: true });
+
+  const expiresAt = new Date();
+  expiresAt.setDate(expiresAt.getDate() + 30);
+
+  await RefreshToken.create({
+    dentistId: dentist._id,
+    token: refreshToken,
+    expiresAt,
+    userAgent: req.headers['user-agent'],
+    ip: req.ip || req.connection.remoteAddress,
+  });
 
   res.cookie('refreshToken', refreshToken, REFRESH_COOKIE_OPTIONS);
 
@@ -108,20 +131,43 @@ const refreshAccessToken = asyncHandler(async (req, res) => {
     throw new Error('Invalid or expired refresh token');
   }
 
-  const dentist = await Dentist.findById(decoded.id);
-  if (!dentist || !dentist.refreshTokens.includes(token)) {
+  // REFRESH TOKEN ROTATION (RTR)
+  // 1. Verify token exists in DB
+  const storedToken = await RefreshToken.findOne({ token });
+  
+  if (!storedToken) {
     res.status(403);
     throw new Error('Refresh token mismatch — possible reuse detected');
   }
 
-  // Issue a new short-lived access token, but DO NOT rotate the refresh
-  // token to prevent race conditions when the user has multiple tabs open.
-  const newAccessToken = generateAccessToken(dentist._id, dentist.role);
+  const dentist = await Dentist.findById(decoded.id);
+  if (!dentist) {
+    await RefreshToken.deleteMany({ dentistId: decoded.id }); // Compromised? Clear all
+    res.status(403);
+    throw new Error('User not found');
+  }
 
-  res.cookie('refreshToken', token, REFRESH_COOKIE_OPTIONS);
+  // 2. Invalidate old token and issue new ones (Rotation)
+  await RefreshToken.deleteOne({ _id: storedToken._id });
+
+  const newAccessToken = generateAccessToken(dentist._id, dentist.role);
+  const newRefreshToken = generateRefreshToken(dentist._id, dentist.role);
+
+  const expiresAt = new Date();
+  expiresAt.setDate(expiresAt.getDate() + 30);
+
+  await RefreshToken.create({
+    dentistId: dentist._id,
+    token: newRefreshToken,
+    expiresAt,
+    userAgent: req.headers['user-agent'],
+    ip: req.ip || req.connection.remoteAddress,
+  });
+
+  res.cookie('refreshToken', newRefreshToken, REFRESH_COOKIE_OPTIONS);
   res.json({
     accessToken: newAccessToken,
-    role: dentist.role,       // let frontend stay in sync after silent refresh
+    role: dentist.role,
   });
 });
 
@@ -131,11 +177,7 @@ const logout = asyncHandler(async (req, res) => {
   const token = req.cookies?.refreshToken;
 
   if (token) {
-    const dentist = await Dentist.findOne({ refreshTokens: token });
-    if (dentist) {
-      dentist.refreshTokens = dentist.refreshTokens.filter((t) => t !== token);
-      await dentist.save({ validateModifiedOnly: true });
-    }
+    await RefreshToken.deleteOne({ token });
   }
 
   res.clearCookie('refreshToken', REFRESH_COOKIE_OPTIONS);
@@ -233,8 +275,7 @@ const updatePassword = asyncHandler(async (req, res) => {
   // Update password field – Mongoose pre-save hook will hash it
   dentist.password = newPassword;
 
-  // Optional: Invalidate other sessions (clear refresh tokens)
-  // dentist.refreshTokens = []; 
+  await RefreshToken.deleteMany({ dentistId: dentist._id });
 
   await dentist.save();
 
@@ -307,6 +348,86 @@ const removePhoto = asyncHandler(async (req, res) => {
   res.json({ message: 'Profile photo removed' });
 });
 
+/**
+ * POST /api/auth/google
+ * Verify Google token and login/register user
+ */
+const googleLogin = asyncHandler(async (req, res) => {
+  const { googleToken } = req.body;
+
+  if (!googleToken) {
+    res.status(400);
+    throw new Error('Google token is required');
+  }
+
+  let email, name, picture;
+
+  try {
+    // Try as ID Token first (original behavior)
+    const ticket = await client.verifyIdToken({
+      idToken: googleToken,
+      audience: process.env.GOOGLE_CLIENT_ID,
+    });
+    const payload = ticket.getPayload();
+    email = payload.email;
+    name = payload.name;
+    picture = payload.picture;
+  } catch (err) {
+    // If ID token fails, try as Access Token
+    try {
+      const response = await fetch(`https://www.googleapis.com/oauth2/v3/userinfo?access_token=${googleToken}`);
+      const data = await response.json();
+      if (data.email) {
+        email = data.email;
+        name = data.name;
+        picture = data.picture;
+      } else {
+        throw new Error('Invalid Google token');
+      }
+    } catch (fetchErr) {
+      res.status(400);
+      throw new Error('Invalid Google token');
+    }
+  }
+
+  let dentist = await Dentist.findOne({ email });
+
+  if (!dentist) {
+    dentist = await Dentist.create({
+      name,
+      email,
+      authProvider: 'google',
+      role: 'dentist',
+      profilePhoto: { url: picture },
+    });
+  }
+
+  const accessToken = generateAccessToken(dentist._id, dentist.role);
+  const refreshToken = generateRefreshToken(dentist._id, dentist.role);
+
+  const expiresAt = new Date();
+  expiresAt.setDate(expiresAt.getDate() + 30);
+
+  await RefreshToken.create({
+    dentistId: dentist._id,
+    token: refreshToken,
+    expiresAt,
+    userAgent: req.headers['user-agent'],
+    ip: req.ip || req.connection.remoteAddress,
+  });
+
+  res.cookie('refreshToken', refreshToken, REFRESH_COOKIE_OPTIONS);
+
+  res.status(200).json({
+    _id: dentist._id,
+    name: dentist.name,
+    email: dentist.email,
+    role: dentist.role,
+    profilePhoto: dentist.profilePhoto,
+    accessToken,
+  });
+});
+
 module.exports = {
   register,
   login,
@@ -317,4 +438,5 @@ module.exports = {
   updatePassword,
   uploadPhoto,
   removePhoto,
+  googleLogin,
 };

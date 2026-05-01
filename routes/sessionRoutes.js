@@ -7,6 +7,7 @@ const {
   updateSession,
   deleteSession,
   getUpcomingAppointments,
+  getSessionsByDate,
 } = require('../controllers/sessionController');
 
 const router = express.Router();
@@ -16,6 +17,7 @@ router.use(protect);
 
 // ── Specific routes BEFORE /:id ────────────────
 router.get('/upcoming', getUpcomingAppointments);
+router.get('/by-date', getSessionsByDate);
 
 // ── Generic routes ────────────────────────────
 router.route('/')

@@ -1,6 +1,7 @@
 const asyncHandler = require('express-async-handler');
 const Patient = require('../models/Patient');
 const Clinic = require('../models/Clinic');
+const Appointment = require('../models/Appointment');
 
 // ── Create Patient ────────────────────────────
 // POST /api/patients
@@ -227,7 +228,24 @@ const deletePatient = asyncHandler(async (req, res) => {
     throw new Error('Patient not found or access denied');
   }
 
-  res.json({ message: 'Patient removed successfully' });
+  // Cancel future appointments for this patient
+  const todayDateStr = new Date().toISOString().split('T')[0];
+  await Appointment.updateMany(
+    {
+      patient_id: patient._id,
+      dentist_id: req.dentist._id,
+      date: { $gte: new Date(todayDateStr) },
+      status: { $nin: ['completed', 'cancelled'] },
+    },
+    {
+      $set: {
+        status: 'cancelled',
+        notes: 'Patient profile was deleted',
+      },
+    }
+  );
+
+  res.json({ message: 'Patient removed and future appointments cancelled successfully' });
 });
 
 module.exports = { createPatient, getPatients, getPatientById, updatePatient, deletePatient };

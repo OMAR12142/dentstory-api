@@ -17,17 +17,20 @@ const dentistSchema = new mongoose.Schema(
     },
     password: {
       type: String,
-      required: [true, 'Password is required'],
+      required: function () {
+        return this.authProvider === 'local';
+      },
       minlength: 6,
-      select: false, // never returned by default
+      select: false,
+    },
+    authProvider: {
+      type: String,
+      enum: ['local', 'google'],
+      default: 'local',
     },
     phone: {
       type: String,
       trim: true,
-    },
-    refreshTokens: {
-      type: [String],
-      default: [],
     },
     // ── Role-Based Access Control ────────────────
     role: {

@@ -5,6 +5,27 @@ const Dentist = require('../models/Dentist');
 const Patient = require('../models/Patient');
 const Session = require('../models/Session');
 const Clinic = require('../models/Clinic');
+const Portfolio = require('../models/Portfolio');
+const RefreshToken = require('../models/RefreshToken');
+const jwt = require('jsonwebtoken');
+
+// ── Auth Helpers (Mirroring authController) ──────────
+const generateAccessToken = (id, role) =>
+  jwt.sign({ id, role }, process.env.ACCESS_TOKEN_SECRET, {
+    expiresIn: process.env.ACCESS_TOKEN_EXPIRES_IN || '30d',
+  });
+
+const generateRefreshToken = (id, role) =>
+  jwt.sign({ id, role }, process.env.REFRESH_TOKEN_SECRET, {
+    expiresIn: process.env.REFRESH_TOKEN_EXPIRES_IN || '30d',
+  });
+
+const REFRESH_COOKIE_OPTIONS = {
+  httpOnly: true,
+  secure: true,
+  sameSite: 'none',
+  maxAge: 30 * 24 * 60 * 60 * 1000, // 30 days
+};
 
 // ─────────────────────────────────────────────────────────────
 // @desc    Get high-level platform statistics for the Super Admin
@@ -261,7 +282,7 @@ const getDentistProfile = asyncHandler(async (req, res) => {
   }
 
   // Run optimized queries in parallel (Removing full Patients and Recent Sessions)
-  const [patientCount, clinics, earningsByClinic, treatmentBreakdown, totals] =
+  const [patientCount, clinics, earningsByClinic, treatmentBreakdown, totals, portfolio] =
     await Promise.all([
       // 1️⃣  Count of patients belonging to this dentist (Optimized)
       Patient.countDocuments({ dentist_id: id, isDeleted: { $ne: true } }),
@@ -339,6 +360,9 @@ const getDentistProfile = asyncHandler(async (req, res) => {
           },
         },
       ]),
+
+      // 6️⃣  Portfolio Status
+      Portfolio.findOne({ dentist_id: id }).select('slug isPublished isSuspended'),
     ]);
 
   res.json({
@@ -354,6 +378,7 @@ const getDentistProfile = asyncHandler(async (req, res) => {
     clinics,
     earningsByClinic,
     treatmentBreakdown,
+    portfolio,
   });
 });
 
@@ -379,11 +404,12 @@ const resetDentistPassword = asyncHandler(async (req, res) => {
   // Generate a secure 12-character random string for the temporary password
   const newPassword = crypto.randomBytes(6).toString('hex');
 
-  // Update password and clear refreshTokens to force logout from all devices
+  // Update password and clear sessions to force logout from all devices
   dentist.password = newPassword;
-  dentist.refreshTokens = [];
+  
+  // Atomic clear of all refresh tokens
+  await RefreshToken.deleteMany({ dentistId: dentist._id });
 
-  // Mongoose pre('save') hook will take care of hashing the newpassword
   await dentist.save();
 
   res.json({
@@ -394,6 +420,85 @@ const resetDentistPassword = asyncHandler(async (req, res) => {
   });
 });
 
+// ─────────────────────────────────────────────────────────────
+// @desc    Impersonate a dentist (Shadow Access)
+// @route   POST /api/admin/dentists/:id/impersonate
+// @access  Private / Admin
+// ─────────────────────────────────────────────────────────────
+const impersonateDentist = asyncHandler(async (req, res) => {
+  const dentist = await Dentist.findById(req.params.id);
+
+  if (!dentist) {
+    res.status(404);
+    throw new Error('Dentist not found');
+  }
+
+  // Prevent admin from impersonating another admin for security
+  if (dentist.role === 'admin') {
+    res.status(403);
+    throw new Error('Shadow access is only available for dentist accounts');
+  }
+
+  const accessToken = generateAccessToken(dentist._id, dentist.role);
+  const refreshToken = generateRefreshToken(dentist._id, dentist.role);
+
+  // Manage active sessions (limit to 5 devices)
+  const sessionCount = await RefreshToken.countDocuments({ dentistId: dentist._id });
+  if (sessionCount >= 5) {
+    const oldestTokens = await RefreshToken.find({ dentistId: dentist._id })
+      .sort({ createdAt: 1 })
+      .limit(sessionCount - 4);
+    await RefreshToken.deleteMany({ _id: { $in: oldestTokens.map(t => t._id) } });
+  }
+
+  const expiresAt = new Date();
+  expiresAt.setDate(expiresAt.getDate() + 30);
+
+  await RefreshToken.create({
+    dentistId: dentist._id,
+    token: refreshToken,
+    expiresAt,
+    userAgent: req.headers['user-agent'] + ' (Shadow Access)',
+    ip: req.ip || req.connection.remoteAddress,
+  });
+
+  res.cookie('refreshToken', refreshToken, REFRESH_COOKIE_OPTIONS);
+
+  res.json({
+    _id: dentist._id,
+    name: dentist.name,
+    email: dentist.email,
+    role: dentist.role,
+    profilePhoto: dentist.profilePhoto,
+    accessToken,
+    isShadowMode: true,
+  });
+});
+
+// ─────────────────────────────────────────────────────────────
+// @desc    Toggle a portfolio's suspension status
+// @route   PATCH /api/admin/dentists/:id/portfolio-status
+// @access  Private / Admin
+// ─────────────────────────────────────────────────────────────
+const togglePortfolioSuspension = asyncHandler(async (req, res) => {
+  const portfolio = await Portfolio.findOne({ dentist_id: req.params.id });
+
+  if (!portfolio) {
+    res.status(404);
+    throw new Error('No portfolio found for this dentist');
+  }
+
+  portfolio.isSuspended = !portfolio.isSuspended;
+  await portfolio.save();
+
+  res.json({
+    _id: portfolio._id,
+    dentist_id: portfolio.dentist_id,
+    isSuspended: portfolio.isSuspended,
+    message: `Portfolio has been ${portfolio.isSuspended ? 'suspended' : 'unsuspended'}.`,
+  });
+});
+
 module.exports = {
   getPlatformStats,
   getAllDentists,
@@ -401,4 +506,6 @@ module.exports = {
   getRevenueStats,
   getDentistProfile,
   resetDentistPassword,
+  impersonateDentist,
+  togglePortfolioSuspension,
 };

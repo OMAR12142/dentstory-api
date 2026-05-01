@@ -57,10 +57,15 @@ const getPublicPortfolio = asyncHandler(async (req, res) => {
     throw new Error('Portfolio not found');
   }
 
-  // Security: Block public access if unpublished
+  // Security: Block public access if unpublished or suspended
   if (!portfolio.isPublished) {
     res.status(403);
     throw new Error('This portfolio is currently in draft mode and not visible to the public.');
+  }
+
+  if (portfolio.isSuspended) {
+    res.status(403);
+    throw new Error('This clinical portfolio has been temporarily suspended by the platform administrator.');
   }
 
   // Sort and Paginate cases in JS (since they are embedded)
@@ -121,10 +126,15 @@ const getPublicCase = asyncHandler(async (req, res) => {
     throw new Error('Portfolio not found');
   }
 
-  // Security: Block public access if unpublished
+  // Security: Block public access if unpublished or suspended
   if (!portfolio.isPublished) {
     res.status(403);
     throw new Error('This portfolio is currently in draft mode.');
+  }
+
+  if (portfolio.isSuspended) {
+    res.status(403);
+    throw new Error('This case study is part of a portfolio that has been temporarily suspended.');
   }
 
   const caseItem = portfolio.publishedCases.id(req.params.caseId);

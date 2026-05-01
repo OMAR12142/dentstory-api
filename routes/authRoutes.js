@@ -11,6 +11,7 @@ const {
   updatePassword,
   uploadPhoto,
   removePhoto,
+  googleLogin,
 } = require('../controllers/authController');
 const { authLimiter } = require('../middleware/rateLimiter');
 const { protect } = require('../middleware/authMiddleware');
@@ -44,6 +45,7 @@ const passwordSchema = z.object({
 // ── Routes ────────────────────────────────────
 router.post('/register', authLimiter, validate(registerSchema), register);
 router.post('/login', authLimiter, validate(loginSchema), login);
+router.post('/google', googleLogin);
 router.post('/refresh', refreshAccessToken);
 router.post('/logout', logout);
 router.get('/me', getMe);

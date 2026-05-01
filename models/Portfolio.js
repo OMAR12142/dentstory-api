@@ -119,6 +119,11 @@ const portfolioSchema = new mongoose.Schema(
       type: Boolean,
       default: false,
     },
+    // ── Admin toggle ──────────────────────────────
+    isSuspended: {
+      type: Boolean,
+      default: false,
+    },
   },
   { timestamps: true }
 );

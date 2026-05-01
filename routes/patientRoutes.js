@@ -31,7 +31,7 @@ const patientSchema = z.object({
   status: z.enum(['Active', 'On-Hold', 'Completed', 'Dropped']).optional().default('Active'),
   insuranceCompany: z.string().optional(),
   clinic_id: z.string().min(1, 'Clinic is required'),
-  commission_percentage: z.coerce.number().min(0).max(100),
+  commission_percentage: z.coerce.number().min(0).max(100).optional(),
 });
 
 // ── Routes (all protected) ────────────────────

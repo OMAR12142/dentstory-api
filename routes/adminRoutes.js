@@ -8,6 +8,8 @@ const {
   getRevenueStats,
   getDentistProfile,
   resetDentistPassword,
+  impersonateDentist,
+  togglePortfolioSuspension,
 } = require('../controllers/adminController');
 const {
   createAnnouncement,
@@ -44,5 +46,11 @@ router.patch('/dentists/:id/status', toggleDentistStatus);
 
 // POST /api/admin/dentists/:id/reset-password → force password reset
 router.post('/dentists/:id/reset-password', resetDentistPassword);
+
+// POST /api/admin/dentists/:id/impersonate → shadow access
+router.post('/dentists/:id/impersonate', impersonateDentist);
+
+// PATCH /api/admin/dentists/:id/portfolio-status → toggle portfolio suspension
+router.patch('/dentists/:id/portfolio-status', togglePortfolioSuspension);
 
 module.exports = router;
