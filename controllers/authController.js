@@ -134,7 +134,7 @@ const refreshAccessToken = asyncHandler(async (req, res) => {
   // REFRESH TOKEN ROTATION (RTR)
   // 1. Verify token exists in DB
   const storedToken = await RefreshToken.findOne({ token });
-  
+
   if (!storedToken) {
     res.status(403);
     throw new Error('Refresh token mismatch — possible reuse detected');
@@ -373,18 +373,28 @@ const googleLogin = asyncHandler(async (req, res) => {
     name = payload.name;
     picture = payload.picture;
   } catch (err) {
-    // If ID token fails, try as Access Token
+    // If ID token fails, try as Access Token using getTokenInfo
     try {
-      const response = await fetch(`https://www.googleapis.com/oauth2/v3/userinfo?access_token=${googleToken}`);
-      const data = await response.json();
-      if (data.email) {
-        email = data.email;
-        name = data.name;
-        picture = data.picture;
+      const tokenInfo = await client.getTokenInfo(googleToken);
+
+      // getTokenInfo returns basic info, but for name/picture we might still need userinfo API
+      // However, email is available in tokenInfo.
+      if (tokenInfo.email) {
+        email = tokenInfo.email;
+        // For name and picture, if not in tokenInfo, we'll try to get them from payload if possible
+        // but tokenInfo usually has 'email' and 'sub'. 
+        // If we want more info, we have to use the userinfo endpoint.
+        // Let's use the userinfo endpoint but with the library's request method for safety.
+        const url = 'https://www.googleapis.com/oauth2/v3/userinfo';
+        const response = await client.request({ url, headers: { Authorization: `Bearer ${googleToken}` } });
+
+        email = response.data.email;
+        name = response.data.name;
+        picture = response.data.picture;
       } else {
         throw new Error('Invalid Google token');
       }
-    } catch (fetchErr) {
+    } catch (tokenErr) {
       res.status(400);
       throw new Error('Invalid Google token');
     }
@@ -422,6 +432,7 @@ const googleLogin = asyncHandler(async (req, res) => {
     _id: dentist._id,
     name: dentist.name,
     email: dentist.email,
+    phone: dentist.phone,
     role: dentist.role,
     profilePhoto: dentist.profilePhoto,
     accessToken,
