@@ -23,11 +23,12 @@ const apiLimiter = rateLimit({
  */
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 5, // Limit each IP to 5 failed/successful login requests per `window`
+  max: process.env.NODE_ENV === 'production' ? 10 : 50,
+  skipSuccessfulRequests: true, // Only count failed attempts (4xx/5xx)
   standardHeaders: true,
   legacyHeaders: false,
   message: {
-    message: 'Too many authentication attempts detected. For your security, this IP has been temporarily blocked from auth routes for 15 minutes.',
+    message: 'Too many failed authentication attempts. Please wait 15 minutes and try again.',
   },
 });
 

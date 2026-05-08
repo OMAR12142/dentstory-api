@@ -3,7 +3,7 @@ const asyncHandler = require('express-async-handler');
 const Dentist = require('../models/Dentist');
 const RefreshToken = require('../models/RefreshToken');
 const { OAuth2Client } = require('google-auth-library');
-const client = new OAuth2Client(process.env.VITE_GOOGLE_CLIENT_ID?.trim());
+const client = new OAuth2Client(process.env.GOOGLE_CLIENT_ID?.trim());
 
 // ── Helpers ───────────────────────────────────
 const generateAccessToken = (id, role) =>
@@ -16,12 +16,14 @@ const generateRefreshToken = (id, role) =>
     expiresIn: process.env.REFRESH_TOKEN_EXPIRES_IN || '30d',
   });
 
+const isProduction = process.env.NODE_ENV === 'production';
+
 const REFRESH_COOKIE_OPTIONS = {
   httpOnly: true,
-  // Force secure: true for Vercel/Production to ensure Safari (iOS) accepts the cookie.
-  // Safari blocks 'sameSite: none' cookies if 'secure' is false.
-  secure: true,
-  sameSite: 'none',
+  // secure: true required for sameSite:'none' (Safari/iOS).
+  // On localhost (HTTP), we use secure:false + sameSite:'lax' so the browser stores the cookie.
+  secure: isProduction,
+  sameSite: isProduction ? 'none' : 'lax',
   maxAge: 30 * 24 * 60 * 60 * 1000, // 30 days
 };
 
@@ -360,15 +362,14 @@ const googleLogin = asyncHandler(async (req, res) => {
     throw new Error('Google token is required');
   }
 
-  console.log('DEBUG: VITE_GOOGLE_CLIENT_ID starts with:', (process.env.VITE_GOOGLE_CLIENT_ID || 'UNDEFINED').substring(0, 10));
-  console.log('DEBUG: Received googleToken starts with:', (googleToken || 'EMPTY').substring(0, 10));
+
 
   let email, name, picture;
 
   try {
     const ticket = await client.verifyIdToken({
       idToken: googleToken,
-      audience: process.env.VITE_GOOGLE_CLIENT_ID?.trim(),
+      audience: process.env.GOOGLE_CLIENT_ID?.trim(),
     });
     const payload = ticket.getPayload();
     email = payload.email;
