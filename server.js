@@ -25,8 +25,6 @@ const appointmentRoutes = require('./routes/appointmentRoutes');
 // ── App initialisation ────────────────────────
 const app = express();
 
-// ── Global middleware ─────────────────────────
-app.use(helmet());
 // Build allowed origins list from CLIENT_URL (supports comma-separated values)
 const allowedOrigins = [
   'http://localhost:5173',
@@ -35,6 +33,7 @@ const allowedOrigins = [
   ...(process.env.CLIENT_URL ? process.env.CLIENT_URL.split(',').map(u => u.trim()) : []),
 ];
 
+// CORS must come BEFORE helmet so preflight responses aren't blocked
 app.use(
   cors({
     origin: (origin, callback) => {
@@ -45,7 +44,15 @@ app.use(
         callback(new Error(`CORS blocked: ${origin}`));
       }
     },
-    credentials: true,  // allow cookies to be sent cross-origin
+    credentials: true,
+  })
+);
+
+// Helmet for security headers — configured to not conflict with CORS
+app.use(
+  helmet({
+    crossOriginResourcePolicy: { policy: 'cross-origin' },
+    crossOriginOpenerPolicy: false,
   })
 );
 app.use(express.json());
