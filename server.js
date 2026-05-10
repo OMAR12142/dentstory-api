@@ -93,11 +93,17 @@ app.use((_req, res) => {
 // ── Error handler (must be last) ──────────────
 app.use(errorHandler);
 
-// ── Start server ──────────────────────────────
-const PORT = process.env.PORT || 5000;
+// ── Connect to MongoDB eagerly (works for both local & Vercel) ──
+connectDB();
 
-connectDB().then(() => {
+// ── Start server (local development only) ─────
+// On Vercel, the exported app is used as a serverless function handler.
+if (process.env.NODE_ENV !== 'production') {
+  const PORT = process.env.PORT || 5001;
   app.listen(PORT, () => {
     console.log(`  dentstory server running on port ${PORT}`);
   });
-});
+}
+
+// ── Export for Vercel serverless ───────────────
+module.exports = app;
