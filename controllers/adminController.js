@@ -23,7 +23,7 @@ const generateRefreshToken = (id, role) =>
 const REFRESH_COOKIE_OPTIONS = {
   httpOnly: true,
   secure: true,
-  sameSite: 'none',
+  sameSite: 'lax',
   maxAge: 30 * 24 * 60 * 60 * 1000, // 30 days
 };
 
@@ -406,7 +406,7 @@ const resetDentistPassword = asyncHandler(async (req, res) => {
 
   // Update password and clear sessions to force logout from all devices
   dentist.password = newPassword;
-  
+
   // Atomic clear of all refresh tokens
   await RefreshToken.deleteMany({ dentistId: dentist._id });
 

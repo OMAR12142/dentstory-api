@@ -23,7 +23,7 @@ const REFRESH_COOKIE_OPTIONS = {
   // secure: true required for sameSite:'none' (Safari/iOS).
   // On localhost (HTTP), we use secure:false + sameSite:'lax' so the browser stores the cookie.
   secure: isProduction,
-  sameSite: isProduction ? 'none' : 'lax',
+  sameSite: 'lax',
   maxAge: 30 * 24 * 60 * 60 * 1000, // 30 days
 };
 
@@ -377,7 +377,7 @@ const googleLogin = asyncHandler(async (req, res) => {
     picture = payload.picture;
   } catch (err) {
     console.error('❌ Google Token Verification Error:', err.message);
-    
+
     // Fallback: try to fetch user info if it's an access token instead of id token
     try {
       client.setCredentials({ access_token: googleToken });
