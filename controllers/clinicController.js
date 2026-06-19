@@ -1,5 +1,7 @@
 const asyncHandler = require('express-async-handler');
 const Clinic = require('../models/Clinic');
+const FixedSalary = require('../models/FixedSalary');
+const { analyticsCache } = require('../utils/cache');
 
 // ── Create Clinic ─────────────────────────────
 // POST /api/clinics
@@ -55,8 +57,18 @@ const updateClinic = asyncHandler(async (req, res) => {
   // Update allowed fields
   if (name !== undefined) clinic.name = name;
   if (address !== undefined) clinic.address = address;
-  if (default_commission_percentage !== undefined)
-    clinic.default_commission_percentage = default_commission_percentage;
+  if (default_commission_percentage !== undefined) {
+    if (
+      default_commission_percentage === null ||
+      isNaN(Number(default_commission_percentage)) ||
+      Number(default_commission_percentage) < 0 ||
+      Number(default_commission_percentage) > 100
+    ) {
+      res.status(400);
+      throw new Error('Valid commission percentage (0-100) is required');
+    }
+    clinic.default_commission_percentage = Number(default_commission_percentage);
+  }
   if (working_days !== undefined) clinic.working_days = working_days;
 
   await clinic.save();
@@ -74,7 +86,13 @@ const deleteClinic = asyncHandler(async (req, res) => {
     throw new Error('Clinic not found or access denied');
   }
 
-  res.json({ message: 'Clinic removed successfully' });
+  // Cascading delete: Remove any fixed salary associated with this clinic
+  await FixedSalary.deleteMany({ clinic_id: req.params.id, dentist_id: req.dentist._id });
+
+  // Clear analytics cache since financial data might have changed
+  analyticsCache.clear();
+
+  res.json({ message: 'Clinic and associated records removed successfully' });
 });
 
 module.exports = { createClinic, getClinics, updateClinic, deleteClinic };

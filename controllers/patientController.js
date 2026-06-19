@@ -8,6 +8,11 @@ const Appointment = require('../models/Appointment');
 const createPatient = asyncHandler(async (req, res) => {
   const { clinic_id, commission_percentage, ...rest } = req.body;
 
+  if (!rest.name || !rest.name.trim()) {
+    res.status(400);
+    throw new Error('Patient name is required');
+  }
+
   if (!clinic_id) {
     res.status(400);
     throw new Error('Clinic is required when creating a patient');

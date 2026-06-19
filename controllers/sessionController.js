@@ -75,6 +75,11 @@ const createSession = asyncHandler(async (req, res) => {
     }
   }
 
+  if (!parsedCategories || parsedCategories.length === 0) {
+    res.status(400);
+    throw new Error('At least one treatment category is required');
+  }
+
   const session = await Session.create({
     dentist_id: req.dentist._id,
     patient_id,
@@ -85,7 +90,7 @@ const createSession = asyncHandler(async (req, res) => {
     media_urls,
     total_cost: cost,
     amount_paid: paid,
-    remaining_balance: cost - paid,
+    remaining_balance: Math.max(0, cost - paid),
     dentist_cut,
     next_appointment,
   });
@@ -290,7 +295,7 @@ const updateSession = asyncHandler(async (req, res) => {
     req.body.dentist_cut = total_cost * (commissionRate / 100);
   }
 
-  req.body.remaining_balance = total_cost - amount_paid;
+  req.body.remaining_balance = Math.max(0, total_cost - amount_paid);
 
   // Handle media updates (existing + new)
   if (req.body.existing_media !== undefined || (req.files && req.files.length > 0)) {
@@ -324,16 +329,28 @@ const updateSession = asyncHandler(async (req, res) => {
     req.body.media_urls = combinedMedia;
   }
 
-  // Parse treatment_category from JSON string if present
-  if (req.body.treatment_category && typeof req.body.treatment_category === 'string') {
-    try {
-      req.body.treatment_category = JSON.parse(req.body.treatment_category);
-    } catch {
-      // Legacy single string - wrap in array
-      req.body.treatment_category = req.body.treatment_category ? [req.body.treatment_category] : [];
+  // Parse treatment_category if provided
+  let parsedCategories = undefined;
+  if (req.body.treatment_category !== undefined) {
+    if (typeof req.body.treatment_category === 'string') {
+      try {
+        parsedCategories = JSON.parse(req.body.treatment_category);
+      } catch {
+        parsedCategories = req.body.treatment_category ? [req.body.treatment_category] : [];
+      }
+    } else {
+      parsedCategories = req.body.treatment_category;
     }
+    
+    if (!parsedCategories || parsedCategories.length === 0) {
+      res.status(400);
+      throw new Error('At least one treatment category is required');
+    }
+    req.body.treatment_category = parsedCategories;
   }
 
+  // NOTE: findOneAndUpdate bypasses Mongoose pre('save') hooks.
+  // Financial fields (remaining_balance, dentist_cut) are manually calculated above.
   const updatedSession = await Session.findOneAndUpdate(
     { _id: req.params.id, dentist_id: req.dentist._id },
     req.body,

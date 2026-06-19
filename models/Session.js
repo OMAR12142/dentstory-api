@@ -75,7 +75,7 @@ const sessionSchema = new mongoose.Schema(
 
 // ── Auto-calculate remaining_balance on save ──
 sessionSchema.pre('save', function (next) {
-  this.remaining_balance = this.total_cost - this.amount_paid;
+  this.remaining_balance = Math.max(0, this.total_cost - this.amount_paid);
   next();
 });
 

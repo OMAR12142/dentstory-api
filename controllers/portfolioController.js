@@ -43,6 +43,7 @@ async function generateUniqueSlug(name) {
 const getPublicPortfolio = asyncHandler(async (req, res) => {
   const page = parseInt(req.query.page) || 1;
   const limit = parseInt(req.query.limit) || 12;
+  const treatmentTypeFilter = req.query.treatmentType;
   const skip = (page - 1) * limit;
 
   const portfolio = await Portfolio.findOne({
@@ -68,17 +69,34 @@ const getPublicPortfolio = asyncHandler(async (req, res) => {
     throw new Error('This clinical portfolio has been temporarily suspended by the platform administrator.');
   }
 
-  // Sort and Paginate cases in JS (since they are embedded)
-  const allCases = [...portfolio.publishedCases].sort((a, b) => a.order - b.order);
+  // Sort cases
+  let allCases = [...portfolio.publishedCases].sort((a, b) => a.order - b.order);
+
+  // Extract all unique treatment types across the entire portfolio (before filtering)
+  const availableTypesSet = new Set(['General']);
+  allCases.forEach(c => {
+    const types = Array.isArray(c.treatmentType) ? c.treatmentType : (c.treatmentType ? [c.treatmentType] : ['General']);
+    types.forEach(t => availableTypesSet.add(t));
+  });
+  const availableTreatmentTypes = Array.from(availableTypesSet);
+
+  // Apply filtering before pagination
+  if (treatmentTypeFilter && treatmentTypeFilter !== 'All') {
+    allCases = allCases.filter(c => {
+      const types = Array.isArray(c.treatmentType) ? c.treatmentType : [c.treatmentType || 'General'];
+      return types.includes(treatmentTypeFilter);
+    });
+  }
+
   const totalItems = allCases.length;
-  const totalPages = Math.ceil(totalItems / limit);
+  const totalPages = Math.ceil(totalItems / limit) || 1;
   
   const paginatedCases = allCases.slice(skip, skip + limit).map((c) => ({
     _id: c._id,
     title: c.title,
     description: c.description,
     category: c.category,
-    treatmentType: c.treatmentType || 'General',
+    treatmentType: Array.isArray(c.treatmentType) ? c.treatmentType : (c.treatmentType ? [c.treatmentType] : ['General']),
     coverImage: c.coverImage,
     selectedImages: c.selectedImages,
     publishedAt: c.publishedAt,
@@ -98,6 +116,7 @@ const getPublicPortfolio = asyncHandler(async (req, res) => {
     clinicName: portfolio.clinicName,
     clinicAddress: portfolio.clinicAddress,
     isPublished: portfolio.isPublished,
+    availableTreatmentTypes,
     cases: paginatedCases,
     pagination: {
       totalItems,
@@ -154,7 +173,7 @@ const getPublicCase = asyncHandler(async (req, res) => {
       title: caseItem.title,
       description: caseItem.description,
       category: caseItem.category,
-      treatmentType: caseItem.treatmentType || 'General',
+      treatmentType: Array.isArray(caseItem.treatmentType) ? caseItem.treatmentType : (caseItem.treatmentType ? [caseItem.treatmentType] : ['General']),
       coverImage: caseItem.coverImage,
       selectedImages: caseItem.selectedImages,
       publishedAt: caseItem.publishedAt,
@@ -301,12 +320,20 @@ const publishCase = asyncHandler(async (req, res) => {
     throw new Error('Maximum of 5 images allowed per case');
   }
 
-  const newCase = {
+    // Normalize treatmentType: accept string or array, always store as array
+    let normalizedType = ['General'];
+    if (Array.isArray(treatmentType) && treatmentType.length > 0) {
+      normalizedType = treatmentType;
+    } else if (typeof treatmentType === 'string' && treatmentType.trim()) {
+      normalizedType = [treatmentType.trim()];
+    }
+
+    const newCase = {
     session_id: req.body.session_id || new mongoose.Types.ObjectId(),
     title,
     description: description || '',
     category: category || '',
-    treatmentType: treatmentType || 'General',
+    treatmentType: normalizedType,
     selectedImages,
     coverImage: coverImage || selectedImages[0],
     order: portfolio.publishedCases.length,
@@ -341,7 +368,10 @@ const editCase = asyncHandler(async (req, res) => {
     if (req.body.title !== undefined) caseItem.title = req.body.title;
     if (req.body.description !== undefined) caseItem.description = req.body.description;
     if (req.body.category !== undefined) caseItem.category = req.body.category;
-    if (req.body.treatmentType !== undefined) caseItem.treatmentType = req.body.treatmentType;
+    if (req.body.treatmentType !== undefined) {
+      const tt = req.body.treatmentType;
+      caseItem.treatmentType = Array.isArray(tt) ? tt : (typeof tt === 'string' && tt.trim() ? [tt.trim()] : ['General']);
+    }
     if (req.body.selectedImages !== undefined) caseItem.selectedImages = req.body.selectedImages;
     if (req.body.coverImage !== undefined) caseItem.coverImage = req.body.coverImage;
 

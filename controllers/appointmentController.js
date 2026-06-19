@@ -1,6 +1,7 @@
 const asyncHandler = require('express-async-handler');
 const mongoose = require('mongoose');
 const Appointment = require('../models/Appointment');
+const Clinic = require('../models/Clinic');
 
 // ── Helpers ──────────────────────────────────────
 
@@ -140,6 +141,13 @@ const createAppointment = asyncHandler(async (req, res) => {
     throw new Error('Patient, clinic, date, start time, and end time are required');
   }
 
+  // Verify clinic ownership
+  const clinic = await Clinic.findOne({ _id: clinic_id, dentist_id: req.dentist._id });
+  if (!clinic) {
+    res.status(403);
+    throw new Error('Clinic not found or access denied');
+  }
+
   // Validate time order
   const toMin = (t) => {
     const [h, m] = t.split(':').map(Number);
@@ -193,6 +201,15 @@ const updateAppointment = asyncHandler(async (req, res) => {
   }
 
   const { patient_id, clinic_id, date, startTime, endTime, type, notes, status } = req.body;
+
+  if (clinic_id && clinic_id !== appointment.clinic_id.toString()) {
+    // Verify clinic ownership
+    const clinic = await Clinic.findOne({ _id: clinic_id, dentist_id: req.dentist._id });
+    if (!clinic) {
+      res.status(403);
+      throw new Error('Clinic not found or access denied');
+    }
+  }
 
   // If rescheduling, check for conflicts
   const newDate = date || appointment.date;
