@@ -12,6 +12,7 @@ const {
   uploadPhoto,
   removePhoto,
   googleLogin,
+  completeOnboarding
 } = require('../controllers/authController');
 const { authLimiter } = require('../middleware/rateLimiter');
 const { protect } = require('../middleware/authMiddleware');
@@ -24,7 +25,7 @@ const registerSchema = z.object({
   name: z.string().min(1, 'Name is required'),
   email: z.string().email('Invalid email'),
   password: z.string().min(6, 'Password must be at least 6 characters'),
-  phone: z.string().optional(),
+  phone: z.string().min(1, 'Mobile number is required'),
 });
 
 const loginSchema = z.object({
@@ -57,6 +58,9 @@ router.put('/password', protect, validate(passwordSchema), updatePassword);
 // Profile Photo (Protected)
 router.post('/photo', protect, uploadAvatar, uploadPhoto);
 router.delete('/photo', protect, removePhoto);
+
+// Onboarding
+router.put('/onboarding-complete', protect, completeOnboarding);
 
 module.exports = router;
 

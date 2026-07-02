@@ -30,6 +30,7 @@ const dentistSchema = new mongoose.Schema(
     },
     phone: {
       type: String,
+      required: [true, 'Mobile number is required'],
       trim: true,
     },
     // ── Role-Based Access Control ────────────────
@@ -53,6 +54,11 @@ const dentistSchema = new mongoose.Schema(
       type: String,
       enum: ['active', 'suspended'],
       default: 'active',
+    },
+    // ── Onboarding ──────────────────────────────
+    hasCompletedOnboarding: {
+      type: Boolean,
+      default: false,
     },
   },
   { timestamps: true }

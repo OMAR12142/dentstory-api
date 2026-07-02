@@ -2,6 +2,7 @@ const asyncHandler = require('express-async-handler');
 const Patient = require('../models/Patient');
 const Clinic = require('../models/Clinic');
 const Appointment = require('../models/Appointment');
+const { analyticsCache } = require('../utils/cache');
 
 // ── Create Patient ────────────────────────────
 // POST /api/patients
@@ -37,6 +38,9 @@ const createPatient = asyncHandler(async (req, res) => {
     clinic_id: clinic._id,
     commission_percentage: resolvedCommission,
   });
+
+  // Clear analytics cache since patients count might have changed
+  analyticsCache.clear();
 
   res.status(201).json(patient);
 });
@@ -210,6 +214,9 @@ const updatePatient = asyncHandler(async (req, res) => {
     throw new Error('Patient not found or access denied');
   }
 
+  // Clear analytics cache
+  analyticsCache.clear();
+
   res.json(patient);
 });
 
@@ -249,6 +256,9 @@ const deletePatient = asyncHandler(async (req, res) => {
       },
     }
   );
+
+  // Clear analytics cache
+  analyticsCache.clear();
 
   res.json({ message: 'Patient removed and future appointments cancelled successfully' });
 });

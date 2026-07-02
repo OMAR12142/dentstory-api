@@ -22,6 +22,7 @@ const portfolioRoutes = require('./routes/portfolioRoutes');
 const announcementRoutes = require('./routes/announcementRoutes');
 const appointmentRoutes = require('./routes/appointmentRoutes');
 const fixedSalaryRoutes = require('./routes/fixedSalaryRoutes');
+const expenseRoutes = require('./routes/expenseRoutes');
 
 // ── App initialisation ────────────────────────
 const app = express();
@@ -87,6 +88,7 @@ app.use('/api/portfolio', portfolioRoutes);
 app.use('/api/announcements', announcementRoutes);
 app.use('/api/appointments', appointmentRoutes);
 app.use('/api/fixed-salaries', fixedSalaryRoutes);
+app.use('/api/expenses', expenseRoutes);
 
 // ── 404 handler ───────────────────────────────
 app.use((_req, res) => {

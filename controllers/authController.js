@@ -64,6 +64,7 @@ const register = asyncHandler(async (req, res) => {
     phone: dentist.phone,
     role: dentist.role,
     profilePhoto: dentist.profilePhoto,
+    hasCompletedOnboarding: dentist.hasCompletedOnboarding,
     accessToken,
   });
 });
@@ -112,6 +113,7 @@ const login = asyncHandler(async (req, res) => {
     phone: dentist.phone,
     role: dentist.role,
     profilePhoto: dentist.profilePhoto,
+    hasCompletedOnboarding: dentist.hasCompletedOnboarding,
     accessToken,
   });
 });
@@ -223,6 +225,7 @@ const getMe = asyncHandler(async (req, res) => {
     role: dentist.role,
     status: dentist.status,
     profilePhoto: dentist.profilePhoto,
+    hasCompletedOnboarding: dentist.hasCompletedOnboarding,
   });
 });
 
@@ -252,6 +255,7 @@ const updateProfile = asyncHandler(async (req, res) => {
     phone: updatedDentist.phone,
     role: updatedDentist.role,
     profilePhoto: updatedDentist.profilePhoto,
+    hasCompletedOnboarding: updatedDentist.hasCompletedOnboarding,
   });
 });
 
@@ -322,6 +326,7 @@ const uploadPhoto = asyncHandler(async (req, res) => {
     phone: dentist.phone,
     role: dentist.role,
     profilePhoto: dentist.profilePhoto,
+    hasCompletedOnboarding: dentist.hasCompletedOnboarding,
   });
 });
 
@@ -429,8 +434,25 @@ const googleLogin = asyncHandler(async (req, res) => {
     phone: dentist.phone,
     role: dentist.role,
     profilePhoto: dentist.profilePhoto,
+    hasCompletedOnboarding: dentist.hasCompletedOnboarding,
     accessToken,
   });
+});
+
+// ── Complete Onboarding ───────────────────────
+// PUT /api/auth/onboarding-complete
+const completeOnboarding = asyncHandler(async (req, res) => {
+  const dentist = await Dentist.findByIdAndUpdate(
+    req.dentist._id,
+    { hasCompletedOnboarding: true },
+    { new: true }
+  );
+
+  // Clear profile cache so subsequent requests see the updated flag
+  const { analyticsCache } = require('../utils/cache');
+  analyticsCache.del(`prof_${req.dentist._id}`);
+
+  res.json({ message: 'Onboarding marked as complete', hasCompletedOnboarding: dentist.hasCompletedOnboarding });
 });
 
 module.exports = {
@@ -444,4 +466,5 @@ module.exports = {
   uploadPhoto,
   removePhoto,
   googleLogin,
+  completeOnboarding,
 };

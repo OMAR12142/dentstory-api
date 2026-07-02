@@ -4,6 +4,7 @@ const Session = require('../models/Session');
 const Clinic = require('../models/Clinic');
 const Patient = require('../models/Patient');
 const FixedSalary = require('../models/FixedSalary');
+const Expense = require('../models/Expense');
 const { analyticsCache } = require('../utils/cache');
 
 // ── Helper: Calculate Date Range ──────────────
@@ -177,6 +178,27 @@ const getDashboardStats = asyncHandler(async (req, res) => {
     }
   }
 
+  // Total Expenses for this timeframe
+  const expenseAgg = await Expense.aggregate([
+    {
+      $match: {
+        dentist_id: mongoose.Types.ObjectId.isValid(dentistId)
+          ? new mongoose.Types.ObjectId(dentistId)
+          : dentistId,
+        date: { $gte: startDate, $lte: endDate },
+        isDeleted: { $ne: true },
+      },
+    },
+    {
+      $group: {
+        _id: null,
+        totalExpenses: { $sum: '$amount' },
+      },
+    },
+  ]);
+
+  const totalExpenses = expenseAgg.length > 0 ? expenseAgg[0].totalExpenses : 0;
+
   const responseData = {
     timeframe,
     period: {
@@ -189,6 +211,7 @@ const getDashboardStats = asyncHandler(async (req, res) => {
       patientsAdded: totalPatientsCount,
       activePatients,
       monthly_fixed_salary,
+      totalExpenses,
     },
     earnings: earningsData,
   };
@@ -383,8 +406,8 @@ const getEarningsHistory = asyncHandler(async (req, res) => {
     };
     // Ensure the end date covers the full day
     dateMatch.$lte.setHours(23, 59, 59, 999);
-  } else if (filterType === 'all') {
-    // No date restriction for "All-Time"
+  } else if (filterType === 'all' || (filterType === 'custom' && (!customStart || !customEnd))) {
+    // No date restriction for "All-Time" or if custom dates are missing
     dateMatch = { $exists: true };
   }
 
@@ -569,6 +592,33 @@ const getEarningsHistory = asyncHandler(async (req, res) => {
     point.fixed_salary = pointFixedSalary;
   }
 
+  // 1b. Add per-month expenses to the Yearly Trend
+  const trendExpenses = await Expense.aggregate([
+    {
+      $match: {
+        dentist_id: mongoose.Types.ObjectId.isValid(dentistId)
+          ? new mongoose.Types.ObjectId(dentistId)
+          : dentistId,
+        date: dateMatch,
+        isDeleted: { $ne: true },
+      },
+    },
+    {
+      $group: {
+        _id: { year: { $year: '$date' }, month: { $month: '$date' } },
+        totalExpenses: { $sum: '$amount' },
+      },
+    },
+  ]);
+
+  for (const point of formattedTrend) {
+    const pointMonthNum = point.monthNum || (monthNames.indexOf(point.month.split(' ')[0]) + 1);
+    const match = trendExpenses.find(
+      (e) => e._id.year === point.year && e._id.month === pointMonthNum
+    );
+    point.expenses = match ? match.totalExpenses : 0;
+  }
+
   // 2. Build per-clinic breakdown with separate commission and fixed_salary fields
   const clinicBreakdownMap = new Map();
 
@@ -668,11 +718,49 @@ const getEarningsHistory = asyncHandler(async (req, res) => {
     }
   }
 
+  // 3. Add expenses per-clinic to the breakdown
+  const clinicExpenseAgg = await Expense.aggregate([
+    {
+      $match: {
+        dentist_id: mongoose.Types.ObjectId.isValid(dentistId)
+          ? new mongoose.Types.ObjectId(dentistId)
+          : dentistId,
+        date: breakdownMatch,
+        isDeleted: { $ne: true },
+      },
+    },
+    {
+      $group: {
+        _id: '$clinic_id',
+        totalExpenses: { $sum: '$amount' },
+      },
+    },
+  ]);
+
+  for (const expEntry of clinicExpenseAgg) {
+    const clinicId = expEntry._id.toString();
+    const existing = clinicBreakdownMap.get(clinicId);
+    if (existing) {
+      existing.expenses = expEntry.totalExpenses;
+    } else {
+      const clinicDoc = fullDentistClinics.find(c => c._id.toString() === clinicId);
+      clinicBreakdownMap.set(clinicId, {
+        clinicId: expEntry._id,
+        clinicName: clinicDoc ? clinicDoc.name : 'Unknown Clinic',
+        commission: 0,
+        fixed_salary: 0,
+        expenses: expEntry.totalExpenses,
+        sessions: 0,
+      });
+    }
+  }
+
   // Convert map to array and add total earnings
   const monthlyBreakdown = Array.from(clinicBreakdownMap.values()).map(entry => ({
     ...entry,
     commission: Math.round(entry.commission * 100) / 100,
     fixed_salary: Math.round(entry.fixed_salary * 100) / 100,
+    expenses: Math.round((entry.expenses || 0) * 100) / 100,
     earnings: Math.round((entry.commission + entry.fixed_salary) * 100) / 100,
   }));
 
@@ -680,7 +768,17 @@ const getEarningsHistory = asyncHandler(async (req, res) => {
 
   const totalEarnings = formattedTrend.reduce((sum, m) => sum + m.earnings + (m.fixed_salary || 0), 0);
   const totalSessions = formattedTrend.reduce((sum, m) => sum + m.sessions, 0);
+  const totalExpenses = formattedTrend.reduce((sum, m) => sum + (m.expenses || 0), 0);
   const periodEarnings = monthlyBreakdown.reduce((sum, m) => sum + m.earnings, 0);
+
+  // 4. Calculate Total Patients Added in this period
+  const totalPatients = await Patient.countDocuments({
+    dentist_id: mongoose.Types.ObjectId.isValid(dentistId)
+      ? new mongoose.Types.ObjectId(dentistId)
+      : dentistId,
+    createdAt: dateMatch,
+    isDeleted: { $ne: true }
+  });
 
   const responseData = {
     filterType,
@@ -688,6 +786,8 @@ const getEarningsHistory = asyncHandler(async (req, res) => {
       totalYearlyEarnings: Math.round(totalEarnings * 100) / 100,
       totalYearlySessions: totalSessions,
       totalMonthlyEarnings: Math.round(periodEarnings * 100) / 100,
+      totalExpenses: Math.round(totalExpenses * 100) / 100,
+      totalPatients: totalPatients,
     },
     yearlyTrend: formattedTrend,
     monthlyBreakdown,

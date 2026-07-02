@@ -4,6 +4,7 @@ const Session = require('../models/Session');
 const Clinic = require('../models/Clinic');
 const Patient = require('../models/Patient');
 const Appointment = require('../models/Appointment');
+const { analyticsCache } = require('../utils/cache');
 
 // ── Create Session ────────────────────────────
 // POST /api/sessions  (multipart/form-data)
@@ -155,6 +156,9 @@ const createSession = asyncHandler(async (req, res) => {
       }
     }
   }
+
+  // Clear analytics cache because earnings/sessions changed
+  analyticsCache.clear();
 
   res.status(201).json({ session, conflictWarning });
 });
@@ -423,6 +427,9 @@ const updateSession = asyncHandler(async (req, res) => {
       }
     }
   }
+
+  // Clear analytics cache
+  analyticsCache.clear();
 
   res.json({ session: updatedSession, conflictWarning });
 });
