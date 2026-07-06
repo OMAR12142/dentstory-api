@@ -263,4 +263,51 @@ const deletePatient = asyncHandler(async (req, res) => {
   res.json({ message: 'Patient removed and future appointments cancelled successfully' });
 });
 
-module.exports = { createPatient, getPatients, getPatientById, updatePatient, deletePatient };
+// ── Bulk Import Patients ──────────────────────
+// POST /api/patients/bulk
+const bulkImportPatients = asyncHandler(async (req, res) => {
+  const patientsData = req.body;
+
+  if (!Array.isArray(patientsData) || patientsData.length === 0) {
+    res.status(400);
+    throw new Error('No patients provided for import');
+  }
+
+  const patientsToInsert = patientsData.map((patient) => ({
+    ...patient,
+    dentist_id: req.dentist._id,
+  }));
+
+  try {
+    const insertedPatients = await Patient.insertMany(patientsToInsert, { ordered: false });
+    analyticsCache.clear();
+    
+    res.status(201).json({
+      message: `Successfully imported ${insertedPatients.length} patients`,
+      count: insertedPatients.length,
+    });
+  } catch (error) {
+    // If unordered insert partially fails, error.insertedDocs has the successes
+    const insertedCount = error.insertedDocs ? error.insertedDocs.length : 0;
+    if (insertedCount > 0) {
+      analyticsCache.clear();
+      res.status(201).json({
+        message: `Partially imported ${insertedCount} patients. Some failed.`,
+        count: insertedCount,
+        errors: error.writeErrors,
+      });
+    } else {
+      res.status(400);
+      throw new Error(`Failed to import patients: ${error.message}`);
+    }
+  }
+});
+
+module.exports = {
+  createPatient,
+  getPatients,
+  getPatientById,
+  updatePatient,
+  deletePatient,
+  bulkImportPatients,
+};

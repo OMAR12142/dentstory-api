@@ -30,7 +30,7 @@ const dentistSchema = new mongoose.Schema(
     },
     phone: {
       type: String,
-      required: [true, 'Mobile number is required'],
+      default: '',
       trim: true,
     },
     // ── Role-Based Access Control ────────────────

@@ -8,6 +8,7 @@ const {
   getPatientById,
   updatePatient,
   deletePatient,
+  bulkImportPatients,
 } = require('../controllers/patientController');
 
 const router = express.Router();
@@ -34,12 +35,29 @@ const patientSchema = z.object({
   commission_percentage: z.coerce.number().min(0).max(100).optional(),
 });
 
+const bulkPatientSchema = z.array(
+  z.object({
+    name: z.string().min(1, 'Patient name is required'),
+    age: z.coerce.number().int().min(0).optional(),
+    dateOfBirth: z.string().or(z.date()).optional().nullable(),
+    phone: z.string().optional(),
+    phone2: z.string().optional(),
+    address: z.string().optional(),
+    job: z.string().optional(),
+    status: z.enum(['Active', 'On-Hold', 'Completed', 'Dropped']).optional().default('Active'),
+    insuranceCompany: z.string().optional(),
+    clinic_id: z.string().optional(), // Clinic is explicitly optional in bulk
+  })
+);
+
 // ── Routes (all protected) ────────────────────
 router.use(protect);
 
 router.route('/')
   .post(validate(patientSchema), createPatient)
   .get(getPatients);
+
+router.post('/bulk', validate(bulkPatientSchema), bulkImportPatients);
 
 router.route('/:id')
   .get(getPatientById)
