@@ -5,6 +5,7 @@ const Clinic = require('../models/Clinic');
 const Patient = require('../models/Patient');
 const Appointment = require('../models/Appointment');
 const { analyticsCache } = require('../utils/cache');
+const { cleanupUploadedFiles, destroyUnreferencedMediaUrls } = require('../utils/cloudinaryMedia');
 
 // ── Create Session ────────────────────────────
 // POST /api/sessions  (multipart/form-data)
@@ -23,6 +24,7 @@ const createSession = asyncHandler(async (req, res) => {
   // 1. Fetch patient and verify ownership
   const patient = await Patient.findById(patient_id).populate('clinic_id');
   if (!patient || patient.dentist_id.toString() !== req.dentist._id.toString()) {
+    await cleanupUploadedFiles(req.files);
     res.status(403);
     throw new Error('Patient not found or access denied');
   }
@@ -34,17 +36,20 @@ const createSession = asyncHandler(async (req, res) => {
 
   if (!clinic && req.body.clinic_id) {
     if (!mongoose.Types.ObjectId.isValid(req.body.clinic_id)) {
+      await cleanupUploadedFiles(req.files);
       res.status(400);
       throw new Error('Invalid clinic ID provided');
     }
     clinic = await Clinic.findById(req.body.clinic_id);
     if (!clinic || clinic.dentist_id.toString() !== req.dentist._id.toString()) {
+      await cleanupUploadedFiles(req.files);
       res.status(403);
       throw new Error('Clinic not found or access denied');
     }
   }
 
   if (!clinic) {
+    await cleanupUploadedFiles(req.files);
     res.status(400);
     throw new Error('No clinic assigned to this patient. Please edit the patient and assign a clinic first.');
   }
@@ -52,6 +57,7 @@ const createSession = asyncHandler(async (req, res) => {
   // 3. Collect Cloudinary secure_urls from uploaded files (limit total to 5)
   let media_urls = req.files ? req.files.map((f) => f.path) : [];
   if (media_urls.length > 5) {
+    await cleanupUploadedFiles(req.files.slice(5));
     media_urls = media_urls.slice(0, 5);
   }
 
@@ -77,24 +83,31 @@ const createSession = asyncHandler(async (req, res) => {
   }
 
   if (!parsedCategories || parsedCategories.length === 0) {
+    await cleanupUploadedFiles(req.files);
     res.status(400);
     throw new Error('At least one treatment category is required');
   }
 
-  const session = await Session.create({
-    dentist_id: req.dentist._id,
-    patient_id,
-    clinic_id: clinic._id,   // sessions still store clinic_id → analytics unchanged
-    date,
-    treatment_category: parsedCategories,
-    treatment_details,
-    media_urls,
-    total_cost: cost,
-    amount_paid: paid,
-    remaining_balance: Math.max(0, cost - paid),
-    dentist_cut,
-    next_appointment,
-  });
+  let session;
+  try {
+    session = await Session.create({
+      dentist_id: req.dentist._id,
+      patient_id,
+      clinic_id: clinic._id,   // sessions still store clinic_id → analytics unchanged
+      date,
+      treatment_category: parsedCategories,
+      treatment_details,
+      media_urls,
+      total_cost: cost,
+      amount_paid: paid,
+      remaining_balance: Math.max(0, cost - paid),
+      dentist_cut,
+      next_appointment,
+    });
+  } catch (err) {
+    await cleanupUploadedFiles(req.files);
+    throw err;
+  }
 
   // Auto-complete the linked appointment
   if (linked_appointment_id) {
@@ -241,14 +254,18 @@ const updateSession = asyncHandler(async (req, res) => {
   });
 
   if (!session) {
+    await cleanupUploadedFiles(req.files);
     res.status(404);
     throw new Error('Session not found or access denied');
   }
+
+  const previousMediaUrls = [...(session.media_urls || [])];
 
   // Verify patient ownership if patient_id is being updated
   if (req.body.patient_id && req.body.patient_id !== session.patient_id.toString()) {
     const patient = await Patient.findById(req.body.patient_id);
     if (!patient || patient.dentist_id.toString() !== req.dentist._id.toString()) {
+      await cleanupUploadedFiles(req.files);
       res.status(403);
       throw new Error('Patient not found or access denied');
     }
@@ -279,12 +296,14 @@ const updateSession = asyncHandler(async (req, res) => {
   ) {
     // Basic ID validation to prevent 500 CastError
     if (!mongoose.Types.ObjectId.isValid(clinic_id)) {
+      await cleanupUploadedFiles(req.files);
       res.status(400);
       throw new Error('Invalid clinic ID provided');
     }
 
     const clinic = await Clinic.findById(clinic_id);
     if (!clinic || clinic.dentist_id.toString() !== req.dentist._id.toString()) {
+      await cleanupUploadedFiles(req.files);
       res.status(403);
       throw new Error('Clinic not found or access denied');
     }
@@ -302,6 +321,7 @@ const updateSession = asyncHandler(async (req, res) => {
   req.body.remaining_balance = Math.max(0, total_cost - amount_paid);
 
   // Handle media updates (existing + new)
+  let truncatedNewFiles = [];
   if (req.body.existing_media !== undefined || (req.files && req.files.length > 0)) {
     let baseMedia = [];
 
@@ -314,7 +334,7 @@ const updateSession = asyncHandler(async (req, res) => {
         } else {
           baseMedia = Array.isArray(req.body.existing_media) ? req.body.existing_media : [req.body.existing_media];
         }
-      } catch (e) {
+      } catch {
         // Fallback for non-JSON strings
         baseMedia = req.body.existing_media ? [req.body.existing_media] : [];
       }
@@ -325,8 +345,10 @@ const updateSession = asyncHandler(async (req, res) => {
     const newMediaUrls = req.files ? req.files.map((f) => f.path) : [];
     let combinedMedia = [...baseMedia, ...newMediaUrls];
 
-    // Enforce 5 image limit
+    // Enforce 5 image limit and track any excess newly uploaded files for cleanup
     if (combinedMedia.length > 5) {
+      const keptNewCount = Math.max(0, 5 - baseMedia.length);
+      truncatedNewFiles = req.files ? req.files.slice(keptNewCount) : [];
       combinedMedia = combinedMedia.slice(0, 5);
     }
 
@@ -347,6 +369,7 @@ const updateSession = asyncHandler(async (req, res) => {
     }
     
     if (!parsedCategories || parsedCategories.length === 0) {
+      await cleanupUploadedFiles(req.files);
       res.status(400);
       throw new Error('At least one treatment category is required');
     }
@@ -355,11 +378,28 @@ const updateSession = asyncHandler(async (req, res) => {
 
   // NOTE: findOneAndUpdate bypasses Mongoose pre('save') hooks.
   // Financial fields (remaining_balance, dentist_cut) are manually calculated above.
-  const updatedSession = await Session.findOneAndUpdate(
-    { _id: req.params.id, dentist_id: req.dentist._id },
-    req.body,
-    { new: true, runValidators: true }
-  );
+  let updatedSession;
+  try {
+    updatedSession = await Session.findOneAndUpdate(
+      { _id: req.params.id, dentist_id: req.dentist._id },
+      req.body,
+      { new: true, runValidators: true }
+    );
+  } catch (err) {
+    await cleanupUploadedFiles(req.files);
+    throw err;
+  }
+
+  if (truncatedNewFiles.length > 0) {
+    await cleanupUploadedFiles(truncatedNewFiles);
+  }
+
+  if (req.body.media_urls !== undefined && previousMediaUrls.length > 0) {
+    const removedUrls = previousMediaUrls.filter((u) => !req.body.media_urls.includes(u));
+    if (removedUrls.length > 0) {
+      await destroyUnreferencedMediaUrls(req.dentist._id, removedUrls);
+    }
+  }
 
   let conflictWarning = false;
 
@@ -452,6 +492,11 @@ const deleteSession = asyncHandler(async (req, res) => {
   session.isDeleted = true;
   session.deletedAt = new Date();
   await session.save();
+
+  // Safely clean up Cloudinary assets no longer referenced by any active session or portfolio case
+  if (Array.isArray(session.media_urls) && session.media_urls.length > 0) {
+    await destroyUnreferencedMediaUrls(req.dentist._id, session.media_urls);
+  }
 
   // If there's an auto-generated appointment, cancel it
   if (session.generated_appointment_id) {

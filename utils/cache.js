@@ -38,6 +38,22 @@ class SimpleCache {
   }
 
   /**
+   * Delete all cached profile and analytics entries belonging to a specific dentist.
+   */
+  invalidateDentist(dentistId) {
+    if (!dentistId) return;
+    const id = String(dentistId);
+    const prefixes = [`dash_${id}_`, `treat_${id}_`, `hist_${id}_`];
+
+    this.cache.delete(`prof_${id}`);
+    for (const key of this.cache.keys()) {
+      if (prefixes.some((prefix) => key.startsWith(prefix))) {
+        this.cache.delete(key);
+      }
+    }
+  }
+
+  /**
    * Clear the entire cache
    */
   clear() {

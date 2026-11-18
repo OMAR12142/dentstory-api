@@ -27,8 +27,8 @@ const protect = asyncHandler(async (req, res, next) => {
 
     if (!dentist) {
       dentist = await Dentist.findById(decoded.id).select('-password');
-      if (dentist) {
-        // Cache profile for 2 minutes to reduce IO
+      if (dentist && dentist.status !== 'suspended') {
+        // Cache active profile for 2 minutes to reduce IO
         analyticsCache.set(cacheKey, dentist, 120);
       }
     }
@@ -79,4 +79,33 @@ const isAdmin = asyncHandler(async (req, _res, next) => {
   next();
 });
 
-module.exports = { protect, isAdmin };
+/**
+ * Optional authentication middleware for public routes that support owner-only
+ * features (e.g., Draft Portfolio Preview). Never fails unauthenticated or invalid tokens.
+ */
+const optionalProtect = async (req, _res, next) => {
+  const authHeader = req.headers.authorization;
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    req.dentist = null;
+    return next();
+  }
+
+  const token = authHeader.split(' ')[1];
+  try {
+    const decoded = jwt.verify(token, process.env.ACCESS_TOKEN_SECRET);
+    const cacheKey = `prof_${decoded.id}`;
+    let dentist = analyticsCache.get(cacheKey);
+    if (!dentist) {
+      dentist = await Dentist.findById(decoded.id).select('-password');
+      if (dentist && dentist.status !== 'suspended') {
+        analyticsCache.set(cacheKey, dentist, 120);
+      }
+    }
+    req.dentist = dentist || null;
+  } catch {
+    req.dentist = null;
+  }
+  return next();
+};
+
+module.exports = { protect, optionalProtect, isAdmin };

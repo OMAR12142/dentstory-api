@@ -43,6 +43,14 @@ const publishedCaseSchema = new mongoose.Schema(
       type: String,
       default: '',
     },
+    beforeImage: {
+      type: String,
+      default: null,
+    },
+    afterImage: {
+      type: String,
+      default: null,
+    },
     publishedAt: {
       type: Date,
       default: Date.now,
@@ -73,6 +81,14 @@ const portfolioSchema = new mongoose.Schema(
     },
 
     // ── Profile Section ──────────────────────────
+    coverPhoto: {
+      type: String,
+      default: null,
+    },
+    coverTheme: {
+      type: String,
+      default: 'clinical-blue',
+    },
     bio: {
       type: String,
       trim: true,
@@ -108,6 +124,10 @@ const portfolioSchema = new mongoose.Schema(
       type: String,
       trim: true,
       default: '',
+    },
+    showClinicInfo: {
+      type: Boolean,
+      default: true,
     },
 
     // ── Published Cases ──────────────────────────

@@ -7,6 +7,7 @@ const Session = require('../models/Session');
 const Clinic = require('../models/Clinic');
 const Portfolio = require('../models/Portfolio');
 const RefreshToken = require('../models/RefreshToken');
+const { analyticsCache } = require('../utils/cache');
 const jwt = require('jsonwebtoken');
 
 // ── Auth Helpers (Mirroring authController) ──────────
@@ -125,11 +126,14 @@ const toggleDentistStatus = asyncHandler(async (req, res) => {
 
   dentist.status = dentist.status === 'active' ? 'suspended' : 'active';
 
+  await dentist.save({ validateModifiedOnly: true });
+
   if (dentist.status === 'suspended') {
-    dentist.refreshToken = null;
+    await RefreshToken.deleteMany({ dentistId: dentist._id });
   }
 
-  await dentist.save({ validateModifiedOnly: true });
+  // Immediately evict cached auth profile and analytics for this dentist
+  analyticsCache.invalidateDentist(dentist._id);
 
   res.json({
     _id: dentist._id,
@@ -437,6 +441,11 @@ const impersonateDentist = asyncHandler(async (req, res) => {
   if (dentist.role === 'admin') {
     res.status(403);
     throw new Error('Shadow access is only available for dentist accounts');
+  }
+
+  if (dentist.status === 'suspended') {
+    res.status(403);
+    throw new Error('Cannot impersonate a suspended dentist account');
   }
 
   const accessToken = generateAccessToken(dentist._id, dentist.role);

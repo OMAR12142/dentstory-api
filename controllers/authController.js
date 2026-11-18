@@ -80,6 +80,13 @@ const login = asyncHandler(async (req, res) => {
     throw new Error('Invalid email or password');
   }
 
+  if (dentist.status === 'suspended') {
+    return res.status(403).json({
+      message: 'Account suspended. Please contact support.',
+      code: 'ACCOUNT_SUSPENDED',
+    });
+  }
+
   const accessToken = generateAccessToken(dentist._id, dentist.role);
   const refreshToken = generateRefreshToken(dentist._id, dentist.role);
 
@@ -149,6 +156,19 @@ const refreshAccessToken = asyncHandler(async (req, res) => {
     await RefreshToken.deleteMany({ dentistId: decoded.id }); // Compromised? Clear all
     res.status(403);
     throw new Error('User not found');
+  }
+
+  if (dentist.status === 'suspended') {
+    await RefreshToken.deleteMany({ dentistId: dentist._id });
+    res.clearCookie('refreshToken', {
+      httpOnly: REFRESH_COOKIE_OPTIONS.httpOnly,
+      secure: REFRESH_COOKIE_OPTIONS.secure,
+      sameSite: REFRESH_COOKIE_OPTIONS.sameSite,
+    });
+    return res.status(403).json({
+      message: 'Account suspended. Please contact support.',
+      code: 'ACCOUNT_SUSPENDED',
+    });
   }
 
   // 2. Invalidate old token and issue new ones (Rotation)
@@ -298,22 +318,48 @@ const uploadPhoto = asyncHandler(async (req, res) => {
 
   const dentist = await Dentist.findById(req.dentist._id);
   if (!dentist) {
+    if (req.file?.filename) {
+      const cloudinary = require('../config/cloudinary');
+      try {
+        await cloudinary.uploader.destroy(req.file.filename);
+      } catch (err) {
+        console.warn('⚠️ Failed to clean up orphan avatar upload:', err.message);
+      }
+    }
     res.status(404);
     throw new Error('User not found');
   }
 
-  // Delete old photo from Cloudinary if it exists
-  if (dentist.profilePhoto?.publicId) {
-    const cloudinary = require('../config/cloudinary');
-    await cloudinary.uploader.destroy(dentist.profilePhoto.publicId);
-  }
+  const previousPublicId = dentist.profilePhoto?.publicId;
 
-  // Save new photo
+  // Save new photo first so DB never points to a deleted asset
   dentist.profilePhoto = {
     url: req.file.path,
     publicId: req.file.filename,
   };
-  await dentist.save({ validateModifiedOnly: true });
+  try {
+    await dentist.save({ validateModifiedOnly: true });
+  } catch (saveErr) {
+    if (req.file?.filename) {
+      const cloudinary = require('../config/cloudinary');
+      try {
+        await cloudinary.uploader.destroy(req.file.filename);
+      } catch (cleanupErr) {
+        console.warn('⚠️ Failed to clean up orphan avatar upload after DB error:', cleanupErr.message);
+      }
+    }
+    throw saveErr;
+  }
+
+  // Best-effort cleanup of old photo from Cloudinary after DB save succeeds
+  if (previousPublicId && previousPublicId !== req.file.filename) {
+    const cloudinary = require('../config/cloudinary');
+    try {
+      await cloudinary.uploader.destroy(previousPublicId);
+    } catch (destroyErr) {
+      console.warn('⚠️ Failed to delete previous avatar from Cloudinary:', destroyErr.message);
+    }
+  }
 
   // Clear cache
   const { analyticsCache } = require('../utils/cache');
@@ -339,14 +385,20 @@ const removePhoto = asyncHandler(async (req, res) => {
     throw new Error('User not found');
   }
 
-  // Delete from Cloudinary
-  if (dentist.profilePhoto?.publicId) {
-    const cloudinary = require('../config/cloudinary');
-    await cloudinary.uploader.destroy(dentist.profilePhoto.publicId);
-  }
+  const previousPublicId = dentist.profilePhoto?.publicId;
 
   dentist.profilePhoto = { url: '', publicId: '' };
   await dentist.save({ validateModifiedOnly: true });
+
+  // Best-effort delete from Cloudinary after DB reference is cleared
+  if (previousPublicId) {
+    const cloudinary = require('../config/cloudinary');
+    try {
+      await cloudinary.uploader.destroy(previousPublicId);
+    } catch (destroyErr) {
+      console.warn('⚠️ Failed to delete removed avatar from Cloudinary:', destroyErr.message);
+    }
+  }
 
   // Clear cache
   const { analyticsCache } = require('../utils/cache');
@@ -408,6 +460,13 @@ const googleLogin = asyncHandler(async (req, res) => {
       authProvider: 'google',
       role: 'dentist',
       profilePhoto: { url: picture },
+    });
+  }
+
+  if (dentist.status === 'suspended') {
+    return res.status(403).json({
+      message: 'Account suspended. Please contact support.',
+      code: 'ACCOUNT_SUSPENDED',
     });
   }
 
