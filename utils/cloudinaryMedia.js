@@ -5,7 +5,8 @@ const Portfolio = require('../models/Portfolio');
 const ALLOWED_IMAGE_MIMES = new Set(['image/jpeg', 'image/png', 'image/webp']);
 const MANAGED_SESSION_FOLDER = 'antigravity/sessions/';
 const MANAGED_PORTFOLIO_FOLDER = 'antigravity/portfolio/';
-const MANAGED_MEDIA_FOLDERS = [MANAGED_SESSION_FOLDER, MANAGED_PORTFOLIO_FOLDER];
+const MANAGED_CV_FOLDER = 'dentstory/portfolios/cv/';
+const MANAGED_MEDIA_FOLDERS = [MANAGED_SESSION_FOLDER, MANAGED_PORTFOLIO_FOLDER, MANAGED_CV_FOLDER];
 
 /**
  * Extract the Cloudinary public_id for managed session or portfolio images.
@@ -49,11 +50,32 @@ function isOwnedPortfolioUploadUrl(url, dentistId) {
 
 /**
  * Best-effort destroy of a single Cloudinary asset. Never throws.
+ * Supports both 'raw' and 'image' resource types with fallback
+ * so legacy and new CV assets are safely cleaned up.
  */
-async function safeDestroyAsset(publicId) {
+async function safeDestroyAsset(publicId, options = {}) {
   if (!publicId) return false;
   try {
-    await cloudinary.uploader.destroy(publicId);
+    const opts = typeof options === 'string' ? { resource_type: options } : { ...options };
+    if (opts.resource_type) {
+      const res = await cloudinary.uploader.destroy(publicId, opts);
+      if (res?.result === 'ok') return true;
+      const fallbackType = opts.resource_type === 'raw' ? 'image' : 'raw';
+      await cloudinary.uploader.destroy(publicId, { ...opts, resource_type: fallbackType });
+      return true;
+    }
+
+    if (publicId.startsWith(MANAGED_CV_FOLDER)) {
+      const res = await cloudinary.uploader.destroy(publicId, { resource_type: 'raw' });
+      if (res?.result === 'ok') return true;
+      await cloudinary.uploader.destroy(publicId, { resource_type: 'image' });
+      return true;
+    }
+
+    const res = await cloudinary.uploader.destroy(publicId);
+    if (res?.result === 'not found') {
+      await cloudinary.uploader.destroy(publicId, { resource_type: 'raw' });
+    }
     return true;
   } catch {
     return false;
@@ -139,8 +161,10 @@ module.exports = {
   ALLOWED_IMAGE_MIMES,
   MANAGED_SESSION_FOLDER,
   MANAGED_PORTFOLIO_FOLDER,
+  MANAGED_CV_FOLDER,
   extractCloudinaryPublicId,
   isOwnedPortfolioUploadUrl,
+  safeDestroyAsset,
   cleanupUploadedFiles,
   destroyUnreferencedMediaUrls,
 };

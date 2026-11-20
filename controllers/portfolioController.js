@@ -1,5 +1,6 @@
 const asyncHandler = require('express-async-handler');
 const mongoose = require('mongoose');
+const cloudinary = require('../config/cloudinary');
 const Portfolio = require('../models/Portfolio');
 const Session = require('../models/Session');
 const Dentist = require('../models/Dentist');
@@ -8,6 +9,8 @@ const {
   destroyUnreferencedMediaUrls,
   isOwnedPortfolioUploadUrl,
   cleanupUploadedFiles,
+  safeDestroyAsset,
+  extractCloudinaryPublicId,
 } = require('../utils/cloudinaryMedia');
 
 const MAX_CASE_IMAGES = 8;
@@ -26,7 +29,56 @@ const RESERVED_SLUGS = new Set([
   'login',
   'register',
   'dashboard',
+  'public',
 ]);
+
+const DEFAULT_VISIBILITY = Object.freeze({
+  clinicInfo: true,
+  yearsOfExperience: true,
+  casesCount: true,
+  bio: true,
+  specialties: true,
+  cv: true,
+  whatsapp: true,
+  phone: true,
+  email: true,
+  locationCard: true,
+  socialLinks: true,
+});
+
+/**
+ * Merge raw visibility with defaults. If showClinicInfo is explicitly false,
+ * default clinicInfo visibility to false.
+ */
+function normalizeVisibility(rawVisibility, showClinicInfoFallback = true) {
+  const base = { ...DEFAULT_VISIBILITY };
+  if (showClinicInfoFallback === false) {
+    base.clinicInfo = false;
+  }
+  if (!rawVisibility || typeof rawVisibility !== 'object') {
+    return base;
+  }
+  Object.keys(DEFAULT_VISIBILITY).forEach((key) => {
+    if (typeof rawVisibility[key] === 'boolean') {
+      base[key] = rawVisibility[key];
+    }
+  });
+  return base;
+}
+
+/**
+ * Sanitize an uploaded CV filename for safe storage and download.
+ */
+function sanitizeFileName(name) {
+  if (typeof name !== 'string' || !name.trim()) return 'Doctor_CV.pdf';
+  const base = name.replace(/^.*[\\/]/, '').trim();
+  let sanitized = base.replace(/[^a-zA-Z0-9.\s_-]/g, '').trim();
+  if (!sanitized) return 'Doctor_CV.pdf';
+  if (!sanitized.toLowerCase().endsWith('.pdf')) {
+    sanitized += '.pdf';
+  }
+  return sanitized;
+}
 
 // ── Helpers ──────────────────────────────────────
 
@@ -248,6 +300,52 @@ function isActivePortfolioOwner(req, portfolio) {
 // ════════════════════════════════════════════════
 
 /**
+ * Unified deterministic sorting for portfolio cases:
+ * 1. Pinned / Featured cases first (isFeatured: true ahead of false)
+ * 2. Explicit numeric order ascending (order: 0, 1, 2, ...)
+ * 3. Fallback: newer publishedAt first
+ */
+function sortPortfolioCases(cases = []) {
+  return [...cases].sort((a, b) => {
+    const aFeatured = Boolean(a.isFeatured);
+    const bFeatured = Boolean(b.isFeatured);
+    if (aFeatured !== bFeatured) {
+      return aFeatured ? -1 : 1;
+    }
+    const aOrder = typeof a.order === 'number' ? a.order : 0;
+    const bOrder = typeof b.order === 'number' ? b.order : 0;
+    if (aOrder !== bOrder) {
+      return aOrder - bOrder;
+    }
+    const aDate = a.publishedAt ? new Date(a.publishedAt).getTime() : 0;
+    const bDate = b.publishedAt ? new Date(b.publishedAt).getTime() : 0;
+    return bDate - aDate;
+  });
+}
+
+/**
+ * Extract all unique categories and treatment types for a portfolio case.
+ */
+function getCaseCategories(caseItem) {
+  const cats = new Set();
+  const rawTypes = Array.isArray(caseItem.treatmentType)
+    ? caseItem.treatmentType
+    : (caseItem.treatmentType ? [caseItem.treatmentType] : []);
+  for (const t of rawTypes) {
+    if (typeof t === 'string' && t.trim()) {
+      cats.add(t.trim());
+    }
+  }
+  if (typeof caseItem.category === 'string' && caseItem.category.trim()) {
+    cats.add(caseItem.category.trim());
+  }
+  if (cats.size === 0) {
+    cats.add('General');
+  }
+  return Array.from(cats);
+}
+
+/**
  * GET /api/portfolio/:slug
  * Fetch a published portfolio + case summaries.
  * Returns dentist profile photo, name, and portfolio data.
@@ -256,7 +354,7 @@ function isActivePortfolioOwner(req, portfolio) {
 const getPublicPortfolio = asyncHandler(async (req, res) => {
   const page = Math.max(1, parseInt(req.query.page, 10) || 1);
   const limit = Math.max(1, parseInt(req.query.limit, 10) || 12);
-  const treatmentTypeFilter = req.query.treatmentType;
+  const treatmentTypeFilter = req.query.treatmentType || req.query.category;
   const skip = (page - 1) * limit;
 
   const portfolio = await Portfolio.findOne({
@@ -284,22 +382,23 @@ const getPublicPortfolio = asyncHandler(async (req, res) => {
     throw new Error('This portfolio is currently in draft mode and not visible to the public.');
   }
 
-  // Sort cases
-  let allCases = [...portfolio.publishedCases].sort((a, b) => a.order - b.order);
+  // Sort cases deterministically: featured first, then numeric order, then newer
+  let allCases = sortPortfolioCases(portfolio.publishedCases || []);
 
   // Extract all unique treatment types across the entire portfolio (before filtering)
   const availableTypesSet = new Set(['General']);
   allCases.forEach(c => {
-    const types = Array.isArray(c.treatmentType) ? c.treatmentType : (c.treatmentType ? [c.treatmentType] : ['General']);
-    types.forEach(t => availableTypesSet.add(t));
+    const cats = getCaseCategories(c);
+    cats.forEach(t => availableTypesSet.add(t));
   });
   const availableTreatmentTypes = Array.from(availableTypesSet);
 
   // Apply filtering before pagination
   if (treatmentTypeFilter && treatmentTypeFilter !== 'All') {
+    const targetLower = treatmentTypeFilter.toLowerCase();
     allCases = allCases.filter(c => {
-      const types = Array.isArray(c.treatmentType) ? c.treatmentType : [c.treatmentType || 'General'];
-      return types.includes(treatmentTypeFilter);
+      const cats = getCaseCategories(c);
+      return cats.some(cat => cat.toLowerCase() === targetLower);
     });
   }
 
@@ -317,9 +416,12 @@ const getPublicPortfolio = asyncHandler(async (req, res) => {
     afterImage: c.afterImage || null,
     selectedImages: c.selectedImages,
     publishedAt: c.publishedAt,
+    order: c.order,
+    isFeatured: Boolean(c.isFeatured),
   }));
 
-  const showClinicInfo = portfolio.showClinicInfo !== false;
+  const visibility = normalizeVisibility(portfolio.visibility, portfolio.showClinicInfo);
+  const showClinicInfo = visibility.clinicInfo !== false;
 
   res.json({
     dentist: {
@@ -329,14 +431,18 @@ const getPublicPortfolio = asyncHandler(async (req, res) => {
     slug: portfolio.slug,
     coverPhoto: portfolio.coverPhoto || null,
     coverTheme: portfolio.coverTheme || DEFAULT_COVER_THEME,
-    bio: portfolio.bio,
-    yearsOfExperience: portfolio.yearsOfExperience,
-    services: portfolio.services,
-    contactEmail: portfolio.contactEmail,
-    contactPhone: portfolio.contactPhone,
-    clinicName: showClinicInfo ? portfolio.clinicName : '',
-    clinicAddress: showClinicInfo ? portfolio.clinicAddress : '',
+    cvUrl: visibility.cv ? (portfolio.cvUrl || '') : '',
+    cvFileName: visibility.cv ? (portfolio.cvFileName || '') : '',
+    bio: visibility.bio ? (portfolio.bio || '') : '',
+    yearsOfExperience: visibility.yearsOfExperience ? (portfolio.yearsOfExperience || 0) : 0,
+    services: visibility.specialties ? (portfolio.services || []) : [],
+    contactEmail: visibility.email ? (portfolio.contactEmail || '') : '',
+    contactPhone: visibility.phone ? (portfolio.contactPhone || '') : '',
+    whatsappPhone: visibility.whatsapp ? (portfolio.contactPhone || '') : '',
+    clinicName: showClinicInfo ? (portfolio.clinicName || '') : '',
+    clinicAddress: (showClinicInfo && visibility.locationCard) ? (portfolio.clinicAddress || '') : '',
     showClinicInfo,
+    visibility,
     isPublished: portfolio.isPublished,
     isDraftPreview: isOwnerPreview,
     availableTreatmentTypes,
@@ -404,6 +510,8 @@ const getPublicCase = asyncHandler(async (req, res) => {
       afterImage: caseItem.afterImage || null,
       selectedImages: caseItem.selectedImages,
       publishedAt: caseItem.publishedAt,
+      order: caseItem.order,
+      isFeatured: Boolean(caseItem.isFeatured),
     },
   });
 });
@@ -415,11 +523,14 @@ const getPublicCase = asyncHandler(async (req, res) => {
 /**
  * GET /api/portfolio/me
  * Get the current dentist's portfolio (or null).
+ * Supports optional ?category= or ?treatmentType= filtering and returns categories breakdown.
  */
 const getMyPortfolio = asyncHandler(async (req, res) => {
   const page = Math.max(1, parseInt(req.query.page, 10) || 1);
   const limit = Math.max(1, parseInt(req.query.limit, 10) || 12);
-  const skip = (page - 1) * limit;
+  const categoryParam = req.query.category || req.query.treatmentType;
+  const trimmedCategory = typeof categoryParam === 'string' ? categoryParam.trim() : '';
+  const isFiltered = Boolean(trimmedCategory) && trimmedCategory.toLowerCase() !== 'all';
 
   const portfolio = await Portfolio.findOne({ dentist_id: req.dentist._id }).lean();
   
@@ -427,27 +538,72 @@ const getMyPortfolio = asyncHandler(async (req, res) => {
     return res.json(null);
   }
 
-  const allCases = (portfolio.publishedCases || []).sort((a, b) => a.order - b.order);
-  const totalItems = allCases.length;
+  const rawCases = sortPortfolioCases(portfolio.publishedCases || []);
+  const totalAllCases = rawCases.length;
+
+  // Extract all categories & counts across ALL cases of the portfolio (before filtering)
+  const categoryCounts = new Map();
+  const categoryDisplayNames = new Map();
+
+  rawCases.forEach((c) => {
+    const cats = getCaseCategories(c);
+    cats.forEach((catName) => {
+      const lower = catName.toLowerCase();
+      if (!categoryDisplayNames.has(lower)) {
+        categoryDisplayNames.set(lower, catName);
+      }
+      const canonicalName = categoryDisplayNames.get(lower);
+      categoryCounts.set(canonicalName, (categoryCounts.get(canonicalName) || 0) + 1);
+    });
+  });
+
+  const categories = Array.from(categoryCounts.entries())
+    .map(([name, count]) => ({ name, count }))
+    .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
+
+  // Filter cases if a specific category is requested
+  let filteredCases = rawCases;
+  if (isFiltered) {
+    const targetLower = trimmedCategory.toLowerCase();
+    filteredCases = rawCases.filter((c) => {
+      const cats = getCaseCategories(c);
+      return cats.some((cat) => cat.toLowerCase() === targetLower);
+    });
+  }
+
+  const totalItems = filteredCases.length;
   const totalPages = Math.ceil(totalItems / limit) || 1;
-  const paginatedCases = allCases.slice(skip, skip + limit).map((c) => ({
+  const skip = (page - 1) * limit;
+  const paginatedCases = filteredCases.slice(skip, skip + limit).map((c) => ({
     ...c,
     beforeImage: c.beforeImage || null,
     afterImage: c.afterImage || null,
+    isFeatured: Boolean(c.isFeatured),
+    globalRank: rawCases.findIndex((rc) => String(rc._id) === String(c._id)) + 1,
   }));
+
+  const visibility = normalizeVisibility(portfolio.visibility, portfolio.showClinicInfo);
 
   res.json({
     ...portfolio,
     coverPhoto: portfolio.coverPhoto || null,
     coverTheme: portfolio.coverTheme || DEFAULT_COVER_THEME,
-    showClinicInfo: portfolio.showClinicInfo !== false,
+    cvUrl: portfolio.cvUrl || '',
+    cvFileName: portfolio.cvFileName || '',
+    cvPublicId: portfolio.cvPublicId || '',
+    showClinicInfo: visibility.clinicInfo !== false,
+    visibility,
     publishedCases: paginatedCases,
+    categories,
+    totalAllCases,
+    selectedCategory: isFiltered ? trimmedCategory : '',
     pagination: {
       totalItems,
+      totalCases: totalItems,
       totalPages,
       currentPage: page,
       limit,
-    }
+    },
   });
 });
 
@@ -516,8 +672,28 @@ const updatePortfolio = asyncHandler(async (req, res) => {
     }
   });
 
+  if (req.body.visibility && typeof req.body.visibility === 'object') {
+    const currentVis = normalizeVisibility(portfolio.visibility, portfolio.showClinicInfo);
+    const updatedVis = { ...currentVis };
+    Object.keys(DEFAULT_VISIBILITY).forEach((key) => {
+      if (typeof req.body.visibility[key] === 'boolean') {
+        updatedVis[key] = req.body.visibility[key];
+      }
+    });
+    portfolio.visibility = updatedVis;
+    if (typeof req.body.visibility.clinicInfo === 'boolean') {
+      portfolio.showClinicInfo = req.body.visibility.clinicInfo;
+    }
+    portfolio.markModified('visibility');
+  }
+
   if (req.body.showClinicInfo !== undefined) {
     portfolio.showClinicInfo = Boolean(req.body.showClinicInfo);
+    if (!portfolio.visibility) {
+      portfolio.visibility = normalizeVisibility(null, portfolio.showClinicInfo);
+    }
+    portfolio.visibility.clinicInfo = portfolio.showClinicInfo;
+    portfolio.markModified('visibility');
   }
 
   if (req.body.slug !== undefined) {
@@ -550,6 +726,48 @@ const updatePortfolio = asyncHandler(async (req, res) => {
   }
 
   res.json(portfolio);
+});
+
+/**
+ * PATCH /api/portfolio/me/visibility
+ * Update granular per-field public visibility flags.
+ */
+const updateVisibility = asyncHandler(async (req, res) => {
+  const portfolio = await Portfolio.findOne({ dentist_id: req.dentist._id });
+  if (!portfolio) {
+    res.status(404);
+    throw new Error('No portfolio found. Create one first.');
+  }
+
+  const incoming = req.body.visibility && typeof req.body.visibility === 'object'
+    ? req.body.visibility
+    : req.body;
+
+  if (!incoming || typeof incoming !== 'object') {
+    res.status(400);
+    throw new Error('Visibility object is required.');
+  }
+
+  const currentVis = normalizeVisibility(portfolio.visibility, portfolio.showClinicInfo);
+  const updatedVis = { ...currentVis };
+
+  Object.keys(DEFAULT_VISIBILITY).forEach((key) => {
+    if (typeof incoming[key] === 'boolean') {
+      updatedVis[key] = incoming[key];
+    }
+  });
+
+  portfolio.visibility = updatedVis;
+  if (typeof updatedVis.clinicInfo === 'boolean') {
+    portfolio.showClinicInfo = updatedVis.clinicInfo;
+  }
+  portfolio.markModified('visibility');
+  await portfolio.save();
+
+  res.json({
+    visibility: updatedVis,
+    showClinicInfo: portfolio.showClinicInfo,
+  });
 });
 
 /**
@@ -893,9 +1111,8 @@ const reorderCase = asyncHandler(async (req, res) => {
     throw new Error('Portfolio not found');
   }
 
-  // Ensure array order matches display order before swapping
-  const cases = portfolio.publishedCases;
-  cases.sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+  // Ensure array order matches deterministic display order before swapping
+  const cases = sortPortfolioCases(portfolio.publishedCases);
 
   const index = cases.findIndex((c) => c._id.toString() === req.params.caseId);
 
@@ -906,8 +1123,18 @@ const reorderCase = asyncHandler(async (req, res) => {
 
   // Swap logic
   if (direction === 'up' && index > 0) {
+    if (cases[index].isFeatured !== cases[index - 1].isFeatured) {
+      const tempFeatured = cases[index].isFeatured;
+      cases[index].isFeatured = cases[index - 1].isFeatured;
+      cases[index - 1].isFeatured = tempFeatured;
+    }
     [cases[index], cases[index - 1]] = [cases[index - 1], cases[index]];
   } else if (direction === 'down' && index < cases.length - 1) {
+    if (cases[index].isFeatured !== cases[index + 1].isFeatured) {
+      const tempFeatured = cases[index].isFeatured;
+      cases[index].isFeatured = cases[index + 1].isFeatured;
+      cases[index + 1].isFeatured = tempFeatured;
+    }
     [cases[index], cases[index + 1]] = [cases[index + 1], cases[index]];
   }
 
@@ -915,10 +1142,121 @@ const reorderCase = asyncHandler(async (req, res) => {
   cases.forEach((c, i) => {
     c.order = i;
   });
+  portfolio.publishedCases.sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
   portfolio.markModified('publishedCases');
 
   await portfolio.save();
   res.json(portfolio.publishedCases);
+});
+
+/**
+ * PATCH /api/portfolio/me/cases/:caseId/featured
+ * Toggle or set a case's featured/pin status.
+ * Body: { isFeatured: true } (optional; toggles if omitted)
+ */
+const toggleFeaturedCase = asyncHandler(async (req, res) => {
+  const portfolio = await Portfolio.findOne({ dentist_id: req.dentist._id });
+  if (!portfolio) {
+    res.status(404);
+    throw new Error('Portfolio not found');
+  }
+
+  const caseItem = portfolio.publishedCases.id(req.params.caseId);
+  if (!caseItem) {
+    res.status(404);
+    throw new Error('Case not found');
+  }
+
+  if (typeof req.body.isFeatured === 'boolean') {
+    caseItem.isFeatured = req.body.isFeatured;
+  } else {
+    caseItem.isFeatured = !caseItem.isFeatured;
+  }
+
+  // Re-sort with unified deterministic ordering and normalize order numbers
+  const sorted = sortPortfolioCases(portfolio.publishedCases);
+  sorted.forEach((c, idx) => {
+    c.order = idx;
+  });
+  portfolio.publishedCases.sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+
+  portfolio.markModified('publishedCases');
+  await portfolio.save();
+
+  res.json(caseItem);
+});
+
+/**
+ * PATCH /api/portfolio/me/cases/:caseId/position
+ * Move a case to a specific 1-based global position.
+ * Body: { position: 1 }
+ */
+const moveCasePosition = asyncHandler(async (req, res) => {
+  const { position } = req.body;
+  const targetPos = parseInt(position, 10);
+  if (isNaN(targetPos)) {
+    res.status(400);
+    throw new Error('Position must be an integer');
+  }
+
+  const portfolio = await Portfolio.findOne({ dentist_id: req.dentist._id });
+  if (!portfolio) {
+    res.status(404);
+    throw new Error('Portfolio not found');
+  }
+
+  const caseItem = portfolio.publishedCases.id(req.params.caseId);
+  if (!caseItem) {
+    res.status(404);
+    throw new Error('Case not found');
+  }
+
+  // Sort existing cases deterministically
+  const sorted = sortPortfolioCases(portfolio.publishedCases);
+  const totalCases = sorted.length;
+  if (totalCases <= 1) {
+    return res.json({ success: true, case: caseItem, cases: portfolio.publishedCases, newPosition: 1 });
+  }
+
+  const currentIndex = sorted.findIndex((c) => String(c._id) === String(req.params.caseId));
+  if (currentIndex === -1) {
+    res.status(404);
+    throw new Error('Case not found in sorted list');
+  }
+
+  // Target 0-based index clamped between 0 and totalCases - 1
+  const clampedPos = Math.max(1, Math.min(targetPos, totalCases));
+  let targetIndex = clampedPos - 1;
+
+  // Number of featured cases
+  const numFeatured = sorted.filter((c) => Boolean(c.isFeatured)).length;
+
+  // If unpinned case is moved to position <= numFeatured: place at top of unpinned cases
+  if (!caseItem.isFeatured && targetIndex < numFeatured) {
+    targetIndex = numFeatured;
+  } else if (caseItem.isFeatured && targetIndex >= numFeatured) {
+    targetIndex = Math.max(0, numFeatured - 1);
+  }
+
+  // Splice target case into targetIndex
+  const [removed] = sorted.splice(currentIndex, 1);
+  sorted.splice(targetIndex, 0, removed);
+
+  // Normalize contiguous order numbers (0, 1, 2, ...)
+  sorted.forEach((c, idx) => {
+    c.order = idx;
+  });
+  portfolio.publishedCases.sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+
+  portfolio.markModified('publishedCases');
+  await portfolio.save();
+
+  res.json({
+    success: true,
+    case: caseItem,
+    cases: portfolio.publishedCases,
+    newPosition: targetIndex + 1,
+  });
 });
 
 /**
@@ -954,18 +1292,248 @@ const uploadCaseImages = asyncHandler(async (req, res) => {
   });
 });
 
+/**
+ * POST /api/portfolio/me/cv
+ * Upload and save a doctor CV PDF (application/pdf, max 5 MB).
+ * Saves DB reference first, then cleans up previous CV asset on Cloudinary.
+ */
+const uploadPortfolioCv = asyncHandler(async (req, res) => {
+  if (!req.file?.path) {
+    res.status(400);
+    throw new Error('CV PDF file is required');
+  }
+
+  const portfolio = await Portfolio.findOne({ dentist_id: req.dentist._id });
+  if (!portfolio) {
+    await cleanupUploadedFiles([req.file]);
+    res.status(404);
+    throw new Error('No portfolio found. Create one first.');
+  }
+
+  const previousCvPublicId = portfolio.cvPublicId || null;
+  const newPublicId = req.file.filename || extractCloudinaryPublicId(req.file.path) || '';
+  const newFileName = sanitizeFileName(req.file.originalname);
+
+  portfolio.cvUrl = req.file.path;
+  portfolio.cvPublicId = newPublicId;
+  portfolio.cvFileName = newFileName;
+
+  try {
+    await portfolio.save();
+  } catch (saveErr) {
+    await cleanupUploadedFiles([req.file]);
+    throw saveErr;
+  }
+
+  if (previousCvPublicId && previousCvPublicId !== newPublicId) {
+    await safeDestroyAsset(previousCvPublicId);
+  }
+
+  res.json({
+    cvUrl: portfolio.cvUrl,
+    cvFileName: portfolio.cvFileName,
+    cvPublicId: portfolio.cvPublicId,
+  });
+});
+
+/**
+ * DELETE /api/portfolio/me/cv
+ * Remove doctor CV PDF from portfolio and destroy asset from Cloudinary.
+ */
+const deletePortfolioCv = asyncHandler(async (req, res) => {
+  const portfolio = await Portfolio.findOne({ dentist_id: req.dentist._id });
+  if (!portfolio) {
+    res.status(404);
+    throw new Error('No portfolio found');
+  }
+
+  const previousCvPublicId = portfolio.cvPublicId || null;
+
+  portfolio.cvUrl = '';
+  portfolio.cvPublicId = '';
+  portfolio.cvFileName = '';
+
+  await portfolio.save();
+
+  if (previousCvPublicId) {
+    await safeDestroyAsset(previousCvPublicId);
+  }
+
+  res.json({
+    message: 'CV removed successfully',
+    cvUrl: '',
+    cvFileName: '',
+  });
+});
+
+/**
+ * Stream a portfolio CV (PDF) from storage to the client response using signed Cloudinary
+ * URLs (supporting both 'raw' and legacy 'image' resource types) and robust fallback.
+ */
+async function streamCvPdf(req, res, portfolio) {
+  if (!portfolio?.cvUrl) {
+    res.status(404);
+    throw new Error('No CV document found');
+  }
+
+  const cvUrl = portfolio.cvUrl;
+  let resourceType = 'raw';
+  let deliveryType = 'upload';
+  let extractedPublicId = '';
+
+  const cloudMatch = (cvUrl || '').match(/\/([a-z0-9_-]+)\/(upload|authenticated|private)\/(?:s--[^/]+--\/)?(?:v\d+\/)?(.+?)$/i);
+  if (cloudMatch) {
+    resourceType = cloudMatch[1].toLowerCase();
+    deliveryType = cloudMatch[2].toLowerCase();
+    extractedPublicId = cloudMatch[3];
+  } else if ((cvUrl || '').includes('/image/')) {
+    resourceType = 'image';
+  }
+
+  const rawPublicId = portfolio.cvPublicId || extractedPublicId || '';
+  const baseId = rawPublicId.replace(/\.pdf$/i, '');
+  const candidateUrls = [];
+
+  const add = (fn) => {
+    try {
+      const u = fn();
+      if (u && !candidateUrls.includes(u)) candidateUrls.push(u);
+    } catch {
+      // ignore signing error
+    }
+  };
+
+  const hasCloudinaryAuth = Boolean(process.env.CLOUDINARY_CLOUD_NAME && process.env.CLOUDINARY_API_KEY);
+
+  if (resourceType === 'image') {
+    if (hasCloudinaryAuth && baseId) {
+      add(() => cloudinary.utils.private_download_url(baseId, 'pdf', { resource_type: 'image', type: deliveryType }));
+      add(() => cloudinary.url(baseId, { resource_type: 'image', type: deliveryType, format: 'pdf', sign_url: true, secure: true }));
+    }
+    if (cvUrl) add(() => cvUrl);
+    if (hasCloudinaryAuth && rawPublicId) {
+      add(() => cloudinary.url(rawPublicId, { resource_type: 'raw', type: deliveryType, sign_url: true, secure: true }));
+      add(() => cloudinary.utils.private_download_url(rawPublicId, '', { resource_type: 'raw', type: deliveryType }));
+    }
+  } else {
+    if (cvUrl) add(() => cvUrl);
+    if (hasCloudinaryAuth && rawPublicId) {
+      add(() => cloudinary.url(rawPublicId, { resource_type: 'raw', type: deliveryType, sign_url: true, secure: true }));
+      add(() => cloudinary.utils.private_download_url(rawPublicId, '', { resource_type: 'raw', type: deliveryType }));
+    }
+    if (hasCloudinaryAuth && baseId) {
+      add(() => cloudinary.utils.private_download_url(baseId, 'pdf', { resource_type: 'image', type: deliveryType }));
+      add(() => cloudinary.url(baseId, { resource_type: 'image', type: deliveryType, format: 'pdf', sign_url: true, secure: true }));
+    }
+  }
+
+  let upstreamResponse = null;
+  for (const url of candidateUrls) {
+    try {
+      const resp = await fetch(url);
+      if (resp.ok && resp.body) {
+        upstreamResponse = resp;
+        break;
+      }
+    } catch {
+      // Continue to next candidate
+    }
+  }
+
+  if (!upstreamResponse || !upstreamResponse.body) {
+    res.status(404);
+    throw new Error('CV PDF document could not be retrieved from storage');
+  }
+
+  const isDownload = req.query.download === '1';
+  const rawFileName = portfolio.cvFileName || 'Doctor_CV.pdf';
+  const safeFileName = sanitizeFileName(rawFileName);
+
+  res.setHeader('Content-Type', 'application/pdf');
+  res.setHeader('Cache-Control', 'public, max-age=300');
+  res.setHeader(
+    'Content-Disposition',
+    `${isDownload ? 'attachment' : 'inline'}; filename="${safeFileName}"`
+  );
+
+  const { Readable } = require('stream');
+  Readable.fromWeb(upstreamResponse.body).pipe(res);
+}
+
+/**
+ * Public streaming endpoint: GET /api/portfolio/public/:slug/cv (and /:slug/cv)
+ */
+const streamPublicCv = asyncHandler(async (req, res) => {
+  const { slug } = req.params;
+  const portfolio = await Portfolio.findOne({ slug: slug.trim().toLowerCase() });
+
+  if (!portfolio) {
+    res.status(404);
+    throw new Error('Portfolio not found');
+  }
+
+  if (portfolio.isSuspended) {
+    res.status(404);
+    throw new Error('This portfolio is currently suspended');
+  }
+
+  const isOwner = req.dentist && String(portfolio.dentist_id) === String(req.dentist._id);
+  if (!portfolio.isPublished && !isOwner) {
+    res.status(404);
+    throw new Error('Portfolio is not published');
+  }
+
+  const visibility = normalizeVisibility(portfolio.visibility, portfolio.showClinicInfo);
+  if (visibility.cv === false && !isOwner) {
+    res.status(404);
+    throw new Error('CV document is not publicly visible');
+  }
+
+  if (!portfolio.cvUrl) {
+    res.status(404);
+    throw new Error('No CV document uploaded');
+  }
+
+  await streamCvPdf(req, res, portfolio);
+});
+
+/**
+ * Authenticated owner preview endpoint: GET /api/portfolio/me/cv/preview
+ */
+const streamOwnerCv = asyncHandler(async (req, res) => {
+  const portfolio = await Portfolio.findOne({ dentist_id: req.dentist._id });
+
+  if (!portfolio || !portfolio.cvUrl) {
+    res.status(404);
+    throw new Error('No CV document uploaded yet');
+  }
+
+  await streamCvPdf(req, res, portfolio);
+});
+
 module.exports = {
   getPublicPortfolio,
   getPublicCase,
   getMyPortfolio,
   createPortfolio,
   updatePortfolio,
+  updateVisibility,
+  DEFAULT_VISIBILITY,
+  normalizeVisibility,
   uploadPortfolioCover,
+  uploadPortfolioCv,
+  deletePortfolioCv,
+  streamPublicCv,
+  streamOwnerCv,
+  streamCvPdf,
   togglePortfolio,
   publishCase,
   editCase,
   deleteCase,
   reorderCase,
+  toggleFeaturedCase,
+  moveCasePosition,
   getMediaLibrary,
   uploadCaseImages,
+  sanitizeFileName,
 };

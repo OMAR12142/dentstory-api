@@ -54,13 +54,32 @@ function makeDentistDoc(data) {
 }
 
 function makePortfolioDoc(data) {
-  const cases = data.publishedCases.map((c) => ({ ...c }));
+  const cases = (data.publishedCases || []).map((c) => ({
+    ...c,
+    isFeatured: Boolean(c.isFeatured),
+  }));
   cases.id = function (id) {
     return this.find((c) => String(c._id) === String(id)) || null;
   };
   return {
     ...data,
+    cvUrl: data.cvUrl || '',
+    cvFileName: data.cvFileName || '',
+    visibility: data.visibility || {
+      clinicInfo: true,
+      yearsOfExperience: true,
+      casesCount: true,
+      bio: true,
+      specialties: true,
+      cv: true,
+      whatsapp: true,
+      phone: true,
+      email: true,
+      locationCard: true,
+      socialLinks: true,
+    },
     publishedCases: cases,
+    markModified: () => {},
     save: async function () {
       portfolios.set(String(this.dentist_id), this);
       return this;
@@ -128,6 +147,8 @@ function seedData() {
       contactPhone: '01011111111',
       clinicName: 'Alice Clinic',
       clinicAddress: 'Cairo',
+      cvUrl: 'https://res.cloudinary.com/demo/raw/upload/v1/cv/alice_cv.pdf',
+      cvFileName: 'Alice_Dental_CV.pdf',
       isPublished: true,
       isSuspended: false,
       publishedCases: [
@@ -326,6 +347,8 @@ test('Full lifecycle: active -> suspend (revokes RefreshToken, clears analyticsC
   const myPortActive = await apiReq('GET', '/api/portfolio/me/portfolio', { token: aliceToken });
   assert.equal(myPortActive.status, 200);
   assert.equal(myPortActive.data.slug, 'dr-alice-dental');
+  assert.equal(myPortActive.data.cvUrl, 'https://res.cloudinary.com/demo/raw/upload/v1/cv/alice_cv.pdf');
+  assert.equal(myPortActive.data.cvFileName, 'Alice_Dental_CV.pdf');
   assert.ok(analyticsCache.get(`prof_${DENTIST_A_ID}`));
 
   const mediaActive = await apiReq('GET', '/api/portfolio/me/media-library', { token: aliceToken });
@@ -343,6 +366,8 @@ test('Full lifecycle: active -> suspend (revokes RefreshToken, clears analyticsC
   const pubPortActive = await apiReq('GET', '/api/portfolio/dr-alice-dental');
   assert.equal(pubPortActive.status, 200);
   assert.equal(pubPortActive.data.dentist.name, 'Alice Dental');
+  assert.equal(pubPortActive.data.cvUrl, 'https://res.cloudinary.com/demo/raw/upload/v1/cv/alice_cv.pdf');
+  assert.equal(pubPortActive.data.cvFileName, 'Alice_Dental_CV.pdf');
   assert.equal('status' in pubPortActive.data.dentist, false); // status never leaked
 
   const pubCaseActive = await apiReq('GET', `/api/portfolio/dr-alice-dental/case/${CASE_A_ID}`);
@@ -460,6 +485,8 @@ test('Full lifecycle: active -> suspend (revokes RefreshToken, clears analyticsC
   const pubPortRestored = await apiReq('GET', '/api/portfolio/dr-alice-dental');
   assert.equal(pubPortRestored.status, 200);
   assert.equal(pubPortRestored.data.cases.length, 1);
+  assert.equal(pubPortRestored.data.cvUrl, 'https://res.cloudinary.com/demo/raw/upload/v1/cv/alice_cv.pdf');
+  assert.equal(pubPortRestored.data.cvFileName, 'Alice_Dental_CV.pdf');
 
   const pubCaseRestored = await apiReq('GET', `/api/portfolio/dr-alice-dental/case/${CASE_A_ID}`);
   assert.equal(pubCaseRestored.status, 200);
@@ -493,5 +520,337 @@ test('Reactivation preserves pre-suspension draft (isPublished: false) and portf
   assert.equal(portfolios.get(String(DENTIST_A_ID)).isSuspended, true);
   const portSuspendedCheck = await apiReq('GET', '/api/portfolio/dr-alice-dental');
   assert.equal(portSuspendedCheck.status, 403);
+});
+
+test('getMyPortfolio category filtering, global categories breakdown, and pagination', async () => {
+  seedData();
+  const aliceToken = signToken(DENTIST_A_ID, 'dentist');
+
+  const alicePort = portfolios.get(String(DENTIST_A_ID));
+  alicePort.publishedCases = [
+    {
+      _id: new mongoose.Types.ObjectId(),
+      session_id: SESSION_A_ID,
+      title: 'Case 1 - Anterior Crown',
+      category: 'Esthetic',
+      treatmentType: ['Fixed'],
+      selectedImages: ['https://res.cloudinary.com/demo/case-1.jpg'],
+      coverImage: 'https://res.cloudinary.com/demo/case-1.jpg',
+      order: 0,
+    },
+    {
+      _id: new mongoose.Types.ObjectId(),
+      session_id: SESSION_A_ID,
+      title: 'Case 2 - Wisdom Tooth',
+      category: 'Surgery',
+      treatmentType: ['Surgery'],
+      selectedImages: ['https://res.cloudinary.com/demo/case-2.jpg'],
+      coverImage: 'https://res.cloudinary.com/demo/case-2.jpg',
+      order: 1,
+    },
+    {
+      _id: new mongoose.Types.ObjectId(),
+      session_id: SESSION_A_ID,
+      title: 'Case 3 - All on 4',
+      category: 'Implantology',
+      treatmentType: ['Surgery', 'Implant'],
+      selectedImages: ['https://res.cloudinary.com/demo/case-3.jpg'],
+      coverImage: 'https://res.cloudinary.com/demo/case-3.jpg',
+      order: 2,
+    },
+    {
+      _id: new mongoose.Types.ObjectId(),
+      session_id: SESSION_A_ID,
+      title: 'Case 4 - Composite Filling',
+      category: '',
+      treatmentType: ['General'],
+      selectedImages: ['https://res.cloudinary.com/demo/case-4.jpg'],
+      coverImage: 'https://res.cloudinary.com/demo/case-4.jpg',
+      order: 3,
+    },
+  ];
+
+  // 1. Unfiltered request returns all cases and global category breakdown
+  const resAll = await apiReq('GET', '/api/portfolio/me/portfolio', { token: aliceToken });
+  assert.equal(resAll.status, 200);
+  assert.equal(resAll.data.totalAllCases, 4);
+  assert.equal(resAll.data.pagination.totalItems, 4);
+  assert.equal(resAll.data.pagination.totalCases, 4);
+  assert.equal(resAll.data.publishedCases.length, 4);
+  assert.equal(resAll.data.selectedCategory, '');
+
+  // Verify categories array is populated and sorted by count desc
+  const surgeryCat = resAll.data.categories.find((c) => c.name.toLowerCase() === 'surgery');
+  assert.ok(surgeryCat, 'Surgery category should be present');
+  assert.equal(surgeryCat.count, 2); // Case 2 and Case 3
+
+  // 2. Filter by category=surgery (case-insensitive)
+  const resSurgery = await apiReq('GET', '/api/portfolio/me/portfolio?category=surgery', { token: aliceToken });
+  assert.equal(resSurgery.status, 200);
+  assert.equal(resSurgery.data.totalAllCases, 4); // Still 4 total across all categories
+  assert.equal(resSurgery.data.pagination.totalItems, 2);
+  assert.equal(resSurgery.data.publishedCases.length, 2);
+  assert.equal(resSurgery.data.selectedCategory, 'surgery');
+  assert.deepEqual(
+    resSurgery.data.publishedCases.map((c) => c.title),
+    ['Case 2 - Wisdom Tooth', 'Case 3 - All on 4']
+  );
+
+  // 3. Filter by category=Esthetic (matching category field)
+  const resEsthetic = await apiReq('GET', '/api/portfolio/me/portfolio?category=Esthetic', { token: aliceToken });
+  assert.equal(resEsthetic.status, 200);
+  assert.equal(resEsthetic.data.pagination.totalItems, 1);
+  assert.equal(resEsthetic.data.publishedCases[0].title, 'Case 1 - Anterior Crown');
+
+  // 4. Filter by category=all resets filter to all cases
+  const resCategoryAll = await apiReq('GET', '/api/portfolio/me/portfolio?category=all', { token: aliceToken });
+  assert.equal(resCategoryAll.status, 200);
+  assert.equal(resCategoryAll.data.pagination.totalItems, 4);
+  assert.equal(resCategoryAll.data.publishedCases.length, 4);
+
+  // 5. Filter by non-existent category returns 0 cases but preserves categories and totalAllCases
+  const resEmpty = await apiReq('GET', '/api/portfolio/me/portfolio?category=NonExistent', { token: aliceToken });
+  assert.equal(resEmpty.status, 200);
+  assert.equal(resEmpty.data.totalAllCases, 4);
+  assert.equal(resEmpty.data.pagination.totalItems, 0);
+  assert.equal(resEmpty.data.publishedCases.length, 0);
+  assert.ok(resEmpty.data.categories.length > 0);
+
+  // 6. Pagination with limit=2
+  const resPage1 = await apiReq('GET', '/api/portfolio/me/portfolio?page=1&limit=2', { token: aliceToken });
+  assert.equal(resPage1.status, 200);
+  assert.equal(resPage1.data.pagination.totalPages, 2);
+  assert.equal(resPage1.data.pagination.currentPage, 1);
+  assert.equal(resPage1.data.publishedCases.length, 2);
+  assert.equal(resPage1.data.publishedCases[0].title, 'Case 1 - Anterior Crown');
+
+  const resPage2 = await apiReq('GET', '/api/portfolio/me/portfolio?page=2&limit=2', { token: aliceToken });
+  assert.equal(resPage2.status, 200);
+  assert.equal(resPage2.data.pagination.currentPage, 2);
+  assert.equal(resPage2.data.publishedCases.length, 2);
+  assert.equal(resPage2.data.publishedCases[0].title, 'Case 3 - All on 4');
+});
+
+test('Case Priority Ordering: isFeatured toggle, direct rank position, and unified sorting', async () => {
+  seedData();
+  const aliceToken = signToken(DENTIST_A_ID, 'dentist');
+  const alicePort = portfolios.get(String(DENTIST_A_ID));
+
+  const id1 = new mongoose.Types.ObjectId();
+  const id2 = new mongoose.Types.ObjectId();
+  const id3 = new mongoose.Types.ObjectId();
+  const id4 = new mongoose.Types.ObjectId();
+
+  const caseDocs = [
+    {
+      _id: id1,
+      title: 'Case Alpha',
+      order: 0,
+      isFeatured: false,
+      publishedAt: new Date(Date.now() - 3000),
+    },
+    {
+      _id: id2,
+      title: 'Case Beta',
+      order: 1,
+      isFeatured: false,
+      publishedAt: new Date(Date.now() - 2000),
+    },
+    {
+      _id: id3,
+      title: 'Case Gamma',
+      order: 2,
+      isFeatured: false,
+      publishedAt: new Date(Date.now() - 1000),
+    },
+    {
+      _id: id4,
+      title: 'Case Delta',
+      order: 3,
+      isFeatured: false,
+      publishedAt: new Date(),
+    },
+  ];
+  caseDocs.id = function (id) {
+    return this.find((c) => String(c._id) === String(id)) || null;
+  };
+  alicePort.publishedCases = caseDocs;
+
+  // 1. Initially sorted Alpha (0), Beta (1), Gamma (2), Delta (3)
+  const initial = await apiReq('GET', '/api/portfolio/me/portfolio', { token: aliceToken });
+  assert.equal(initial.status, 200);
+  assert.deepEqual(
+    initial.data.publishedCases.map((c) => c.title),
+    ['Case Alpha', 'Case Beta', 'Case Gamma', 'Case Delta']
+  );
+
+  // 2. Toggle Case Gamma to isFeatured = true -> Gamma MUST jump to #1 ahead of all unfeatured cases
+  const featRes = await apiReq('PATCH', `/api/portfolio/me/cases/${id3}/featured`, {
+    token: aliceToken,
+    body: { isFeatured: true },
+  });
+  assert.equal(featRes.status, 200);
+  assert.equal(featRes.data.isFeatured, true);
+
+  // Verify in getMyPortfolio
+  const myPortFeat = await apiReq('GET', '/api/portfolio/me/portfolio', { token: aliceToken });
+  assert.equal(myPortFeat.status, 200);
+  assert.deepEqual(
+    myPortFeat.data.publishedCases.map((c) => c.title),
+    ['Case Gamma', 'Case Alpha', 'Case Beta', 'Case Delta']
+  );
+  assert.equal(myPortFeat.data.publishedCases[0].globalRank, 1);
+  assert.equal(myPortFeat.data.publishedCases[0].isFeatured, true);
+  assert.equal(myPortFeat.data.publishedCases[1].isFeatured, false);
+
+  // Verify in getPublicPortfolio
+  const pubPortFeat = await apiReq('GET', '/api/portfolio/dr-alice-dental');
+  assert.equal(pubPortFeat.status, 200);
+  assert.deepEqual(
+    pubPortFeat.data.cases.map((c) => c.title),
+    ['Case Gamma', 'Case Alpha', 'Case Beta', 'Case Delta']
+  );
+  assert.equal(pubPortFeat.data.cases[0].isFeatured, true);
+
+  // 3. Move Case Delta to position 1 -> Delta is non-featured, so it moves to top of non-featured cases (position 2, right behind Gamma)
+  const moveDeltaTop = await apiReq('PATCH', `/api/portfolio/me/cases/${id4}/position`, {
+    token: aliceToken,
+    body: { position: 1 },
+  });
+  assert.equal(moveDeltaTop.status, 200);
+  assert.equal(moveDeltaTop.data.newPosition, 2);
+
+  const myPortDelta = await apiReq('GET', '/api/portfolio/me/portfolio', { token: aliceToken });
+  assert.deepEqual(
+    myPortDelta.data.publishedCases.map((c) => c.title),
+    ['Case Gamma', 'Case Delta', 'Case Alpha', 'Case Beta']
+  );
+  assert.deepEqual(
+    myPortDelta.data.publishedCases.map((c) => c.order),
+    [0, 1, 2, 3]
+  );
+
+  // 4. Move Case Delta to position 4 (last place)
+  const moveDeltaEnd = await apiReq('PATCH', `/api/portfolio/me/cases/${id4}/position`, {
+    token: aliceToken,
+    body: { position: 4 },
+  });
+  assert.equal(moveDeltaEnd.status, 200);
+  assert.equal(moveDeltaEnd.data.newPosition, 4);
+
+  const myPortDeltaEnd = await apiReq('GET', '/api/portfolio/me/portfolio', { token: aliceToken });
+  assert.deepEqual(
+    myPortDeltaEnd.data.publishedCases.map((c) => c.title),
+    ['Case Gamma', 'Case Alpha', 'Case Beta', 'Case Delta']
+  );
+
+  // 5. Unpin Case Gamma -> returns to normal order based on numeric order/publishedAt
+  const unpinRes = await apiReq('PATCH', `/api/portfolio/me/cases/${id3}/featured`, {
+    token: aliceToken,
+    body: { isFeatured: false },
+  });
+  assert.equal(unpinRes.status, 200);
+  assert.equal(unpinRes.data.isFeatured, false);
+
+  // Now with all unpinned, move Beta to position 1 (global #1)
+  const moveBetaTop = await apiReq('PATCH', `/api/portfolio/me/cases/${id2}/position`, {
+    token: aliceToken,
+    body: { position: 1 },
+  });
+  assert.equal(moveBetaTop.status, 200);
+  assert.equal(moveBetaTop.data.newPosition, 1);
+
+  const myPortBetaTop = await apiReq('GET', '/api/portfolio/me/portfolio', { token: aliceToken });
+  assert.deepEqual(
+    myPortBetaTop.data.publishedCases.map((c) => c.title),
+    ['Case Beta', 'Case Gamma', 'Case Alpha', 'Case Delta']
+  );
+  assert.deepEqual(
+    myPortBetaTop.data.publishedCases.map((c) => c.order),
+    [0, 1, 2, 3]
+  );
+});
+
+test('Granular Per-Field Visibility: server-side redaction in getPublicPortfolio, full preservation in getMyPortfolio, and restoration', async () => {
+  seedData();
+  const aliceToken = signToken(DENTIST_A_ID, 'dentist');
+
+  // 1. Initial public fetch: all fields present
+  const pubInitial = await apiReq('GET', '/api/portfolio/dr-alice-dental');
+  assert.equal(pubInitial.status, 200);
+  assert.equal(pubInitial.data.contactPhone, '01011111111');
+  assert.equal(pubInitial.data.bio, 'Implant specialist');
+  assert.equal(pubInitial.data.cvUrl, 'https://res.cloudinary.com/demo/raw/upload/v1/cv/alice_cv.pdf');
+  assert.equal(pubInitial.data.cvFileName, 'Alice_Dental_CV.pdf');
+  assert.equal(pubInitial.data.yearsOfExperience, 7);
+  assert.deepEqual(pubInitial.data.services, ['Implants']);
+
+  // 2. Hide phone, cv, and bio via PATCH /api/portfolio/me/visibility
+  const patchVis = await apiReq('PATCH', '/api/portfolio/me/visibility', {
+    token: aliceToken,
+    body: {
+      visibility: {
+        phone: false,
+        whatsapp: false,
+        cv: false,
+        bio: false,
+      },
+    },
+  });
+  assert.equal(patchVis.status, 200);
+  assert.equal(patchVis.data.visibility.phone, false);
+  assert.equal(patchVis.data.visibility.cv, false);
+  assert.equal(patchVis.data.visibility.bio, false);
+
+  // 3. getPublicPortfolio must redact phone, whatsappPhone, cv, and bio
+  const pubRedacted = await apiReq('GET', '/api/portfolio/dr-alice-dental');
+  assert.equal(pubRedacted.status, 200);
+  assert.equal(pubRedacted.data.contactPhone, '');
+  assert.equal(pubRedacted.data.whatsappPhone, '');
+  assert.equal(pubRedacted.data.bio, '');
+  assert.equal(pubRedacted.data.cvUrl, '');
+  assert.equal(pubRedacted.data.cvFileName, '');
+  assert.equal(pubRedacted.data.visibility.phone, false);
+  assert.equal(pubRedacted.data.visibility.cv, false);
+  assert.equal(pubRedacted.data.visibility.bio, false);
+  // Unhidden fields remain visible
+  assert.equal(pubRedacted.data.yearsOfExperience, 7);
+  assert.deepEqual(pubRedacted.data.services, ['Implants']);
+
+  // 4. getMyPortfolio preserves all original doctor data untouched
+  const myPort = await apiReq('GET', '/api/portfolio/me/portfolio', { token: aliceToken });
+  assert.equal(myPort.status, 200);
+  assert.equal(myPort.data.contactPhone, '01011111111');
+  assert.equal(myPort.data.bio, 'Implant specialist');
+  assert.equal(myPort.data.cvUrl, 'https://res.cloudinary.com/demo/raw/upload/v1/cv/alice_cv.pdf');
+  assert.equal(myPort.data.cvFileName, 'Alice_Dental_CV.pdf');
+  assert.equal(myPort.data.yearsOfExperience, 7);
+  assert.deepEqual(myPort.data.services, ['Implants']);
+  assert.equal(myPort.data.visibility.phone, false);
+
+  // 5. Re-enable visibility flags via PUT /api/portfolio/me/portfolio
+  const restoreRes = await apiReq('PUT', '/api/portfolio/me/portfolio', {
+    token: aliceToken,
+    body: {
+      visibility: {
+        phone: true,
+        whatsapp: true,
+        cv: true,
+        bio: true,
+      },
+    },
+  });
+  assert.equal(restoreRes.status, 200);
+
+  // 6. getPublicPortfolio restores all previously redacted fields
+  const pubRestored = await apiReq('GET', '/api/portfolio/dr-alice-dental');
+  assert.equal(pubRestored.status, 200);
+  assert.equal(pubRestored.data.contactPhone, '01011111111');
+  assert.equal(pubRestored.data.bio, 'Implant specialist');
+  assert.equal(pubRestored.data.cvUrl, 'https://res.cloudinary.com/demo/raw/upload/v1/cv/alice_cv.pdf');
+  assert.equal(pubRestored.data.cvFileName, 'Alice_Dental_CV.pdf');
+  assert.equal(pubRestored.data.visibility.phone, true);
+  assert.equal(pubRestored.data.visibility.cv, true);
+  assert.equal(pubRestored.data.visibility.bio, true);
 });
 

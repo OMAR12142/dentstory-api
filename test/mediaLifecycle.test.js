@@ -19,10 +19,15 @@ const Clinic = require('../models/Clinic');
 const Session = require('../models/Session');
 const Portfolio = require('../models/Portfolio');
 const errorHandler = require('../middleware/errorHandler');
-const { imageFileFilter } = require('../middleware/uploadMiddleware');
+const { imageFileFilter, pdfFileFilter } = require('../middleware/uploadMiddleware');
 const { extractCloudinaryPublicId, isOwnedPortfolioUploadUrl } = require('../utils/cloudinaryMedia');
 const portfolioRoutes = require('../routes/portfolioRoutes');
-const { uploadCaseImages, uploadPortfolioCover } = require('../controllers/portfolioController');
+const {
+  uploadCaseImages,
+  uploadPortfolioCover,
+  uploadPortfolioCv,
+  deletePortfolioCv,
+} = require('../controllers/portfolioController');
 const { createSession, updateSession, deleteSession } = require('../controllers/sessionController');
 const { protect } = require('../middleware/authMiddleware');
 
@@ -70,6 +75,11 @@ function makePortfolioDoc(data) {
   };
   return {
     ...data,
+    coverPhoto: data.coverPhoto !== undefined ? data.coverPhoto : null,
+    coverTheme: data.coverTheme || 'clinical-blue',
+    cvUrl: data.cvUrl || '',
+    cvPublicId: data.cvPublicId || '',
+    cvFileName: data.cvFileName || '',
     publishedCases: cases,
     markModified: () => {},
     save: async function () {
@@ -139,6 +149,15 @@ app.post('/test/portfolio/me/portfolio/cover', protect, (req, _res, next) => {
   }
   next();
 }, uploadPortfolioCover);
+
+// Test helper route invoking real uploadPortfolioCv controller with simulated Multer req.file
+app.post('/test/portfolio/me/cv', protect, (req, _res, next) => {
+  if (req.body._mockFile) {
+    req.file = req.body._mockFile;
+    delete req.body._mockFile;
+  }
+  next();
+}, uploadPortfolioCv);
 
 // Route to exercise MulterError handling through real errorHandler
 app.get('/test/multer-error/:code', (_req, _res, next) => {
@@ -479,7 +498,7 @@ async function request(path, { method = 'GET', token, body } = {}) {
   const text = await res.text();
   let json = null;
   try { json = JSON.parse(text); } catch { /* ignore */ }
-  return { status: res.status, json };
+  return { status: res.status, json, headers: res.headers, text };
 }
 
 // ── Tests ────────────────────────────────────────────────────
@@ -501,6 +520,23 @@ test('1. Upload validation rejects disallowed MIME types and normalizes MulterEr
     assert.ok(res.err instanceof Error);
     assert.equal(res.err.statusCode, 400);
     assert.match(res.err.message, /JPG, PNG, and WebP/i);
+  }
+
+  // PDF filter validation: accepts application/pdf, rejects others
+  const checkPdfMime = (mimetype) =>
+    new Promise((resolve) => {
+      pdfFileFilter({}, { mimetype }, (err, accepted) => resolve({ err, accepted }));
+    });
+
+  const pdfOk = await checkPdfMime('application/pdf');
+  assert.equal(pdfOk.err, null);
+  assert.equal(pdfOk.accepted, true);
+
+  for (const notPdf of ['image/jpeg', 'image/png', 'application/msword', 'text/plain']) {
+    const res = await checkPdfMime(notPdf);
+    assert.ok(res.err instanceof Error);
+    assert.equal(res.err.statusCode, 400);
+    assert.match(res.err.message, /Only PDF files are allowed/i);
   }
 
   const sizeErr = await request('/test/multer-error/LIMIT_FILE_SIZE');
@@ -1368,4 +1404,239 @@ test('11. Owner Draft Preview: active owner can preview unpublished portfolio & 
   assert.equal(suspendedOwnerPort.status, 403);
   const suspendedOwnerCase = await request(`/api/portfolio/dr-media/case/${caseId}`, { token: ownerToken });
   assert.equal(suspendedOwnerCase.status, 403);
+});
+
+test('12. CV upload, replacement, deletion lifecycle & Cloudinary asset cleanup', async () => {
+  resetFixture();
+  const token = signToken(DENTIST_ID);
+  const suspendedToken = signToken(SUSPENDED_DENTIST_ID);
+
+  // 1. Suspended dentist is blocked with 403 on CV routes
+  const suspUpload = await request('/api/portfolio/me/cv', {
+    method: 'POST',
+    token: suspendedToken,
+  });
+  assert.equal(suspUpload.status, 403);
+  assert.equal(suspUpload.json.code, 'ACCOUNT_SUSPENDED');
+
+  const suspDelete = await request('/api/portfolio/me/cv', {
+    method: 'DELETE',
+    token: suspendedToken,
+  });
+  assert.equal(suspDelete.status, 403);
+
+  // 2. Missing file returns 400
+  const emptyCv = await request('/test/portfolio/me/cv', {
+    method: 'POST',
+    token,
+    body: {},
+  });
+  assert.equal(emptyCv.status, 400);
+  assert.match(emptyCv.json.message, /CV PDF file is required/i);
+
+  // 3. Upload first CV (PDF)
+  const cvUrl1 = 'https://res.cloudinary.com/demo/raw/upload/v1700000021/dentstory/portfolios/cv/doc1/cv_v1.pdf';
+  const cvPublicId1 = 'dentstory/portfolios/cv/doc1/cv_v1';
+  const up1 = await request('/test/portfolio/me/cv', {
+    method: 'POST',
+    token,
+    body: {
+      _mockFile: {
+        path: cvUrl1,
+        filename: cvPublicId1,
+        originalname: 'Dr_Media_Curriculum_Vitae.pdf',
+      },
+    },
+  });
+  assert.equal(up1.status, 200);
+  assert.equal(up1.json.cvUrl, cvUrl1);
+  assert.equal(up1.json.cvPublicId, cvPublicId1);
+  assert.equal(up1.json.cvFileName, 'Dr_Media_Curriculum_Vitae.pdf');
+
+  // Verify getMyPortfolio and getPublicPortfolio return cvUrl and cvFileName
+  const myPort = await request('/api/portfolio/me/portfolio', { token });
+  assert.equal(myPort.status, 200);
+  assert.equal(myPort.json.cvUrl, cvUrl1);
+  assert.equal(myPort.json.cvFileName, 'Dr_Media_Curriculum_Vitae.pdf');
+  assert.equal(myPort.json.cvPublicId, cvPublicId1);
+
+  const pubPort = await request('/api/portfolio/dr-media');
+  assert.equal(pubPort.status, 200);
+  assert.equal(pubPort.json.cvUrl, cvUrl1);
+  assert.equal(pubPort.json.cvFileName, 'Dr_Media_Curriculum_Vitae.pdf');
+  assert.equal('cvPublicId' in pubPort.json, false); // cvPublicId is never leaked publicly
+
+  // 4. Replace CV with second CV (PDF) -> cvPublicId1 MUST be destroyed on Cloudinary
+  destroyedPublicIds = [];
+  const cvUrl2 = 'https://res.cloudinary.com/demo/raw/upload/v1700000022/dentstory/portfolios/cv/doc1/cv_v2.pdf';
+  const cvPublicId2 = 'dentstory/portfolios/cv/doc1/cv_v2';
+  const up2 = await request('/test/portfolio/me/cv', {
+    method: 'POST',
+    token,
+    body: {
+      _mockFile: {
+        path: cvUrl2,
+        filename: cvPublicId2,
+        originalname: 'Dr_Media_Updated_CV.pdf',
+      },
+    },
+  });
+  assert.equal(up2.status, 200);
+  assert.equal(up2.json.cvUrl, cvUrl2);
+  assert.equal(up2.json.cvPublicId, cvPublicId2);
+  assert.equal(up2.json.cvFileName, 'Dr_Media_Updated_CV.pdf');
+  assert.deepEqual(destroyedPublicIds, [cvPublicId1]);
+
+  // 5. Delete CV via DELETE /api/portfolio/me/cv -> cvPublicId2 MUST be destroyed on Cloudinary and DB cleared
+  destroyedPublicIds = [];
+  const delCv = await request('/api/portfolio/me/cv', {
+    method: 'DELETE',
+    token,
+  });
+  assert.equal(delCv.status, 200);
+  assert.equal(delCv.json.message, 'CV removed successfully');
+  assert.deepEqual(destroyedPublicIds, [cvPublicId2]);
+
+  // 6. Endpoints now show empty CV fields
+  const myPortCleared = await request('/api/portfolio/me/portfolio', { token });
+  assert.equal(myPortCleared.status, 200);
+  assert.equal(myPortCleared.json.cvUrl, '');
+  assert.equal(myPortCleared.json.cvFileName, '');
+  assert.equal(myPortCleared.json.cvPublicId, '');
+
+  const pubPortCleared = await request('/api/portfolio/dr-media');
+  assert.equal(pubPortCleared.status, 200);
+  assert.equal(pubPortCleared.json.cvUrl, '');
+  assert.equal(pubPortCleared.json.cvFileName, '');
+});
+
+test('13. CV PDF streaming proxy: public delivery, query token auth, redaction & disposition headers', async () => {
+  resetFixture();
+  const token = signToken(DENTIST_ID);
+
+  // 1. Upload a CV for dr-media
+  const cvUrl = 'https://res.cloudinary.com/demo/raw/upload/v1700000030/dentstory/portfolios/cv/doc1/cv_v3.pdf';
+  const cvPublicId = 'dentstory/portfolios/cv/doc1/cv_v3';
+  await request('/test/portfolio/me/cv', {
+    method: 'POST',
+    token,
+    body: {
+      _mockFile: {
+        path: cvUrl,
+        filename: cvPublicId,
+        originalname: 'Dr_Omar_Curriculum_Vitae.pdf',
+      },
+    },
+  });
+
+  // Mock upstream Cloudinary fetch while keeping local test server fetch intact
+  const originalFetch = global.fetch;
+  const pdfBuffer = Buffer.from('%PDF-1.4 mock binary pdf stream content');
+  global.fetch = async (input, init) => {
+    const url = typeof input === 'string' ? input : input?.url || '';
+    if (url.includes('cloudinary.com')) {
+      // Simulate real Cloudinary behavior: direct /image/upload/... returns 401 for PDFs,
+      // while signed /image/download and /raw/... return 200 with the stream
+      if (url.includes('/image/upload/')) {
+        return {
+          ok: false,
+          status: 401,
+          statusText: 'Unauthorized',
+          headers: new Headers(),
+          body: null,
+        };
+      }
+      return {
+        ok: true,
+        status: 200,
+        headers: new Headers({
+          'content-type': 'application/pdf',
+          'content-length': String(pdfBuffer.length),
+        }),
+        body: ReadableStream.from([pdfBuffer]),
+      };
+    }
+    return originalFetch(input, init);
+  };
+
+  try {
+    // 2. Public view streaming proxy: inline disposition
+    const pubStream = await request('/api/portfolio/public/dr-media/cv');
+    assert.equal(pubStream.status, 200);
+    assert.equal(pubStream.headers.get('content-type'), 'application/pdf');
+    assert.match(pubStream.headers.get('content-disposition'), /inline; filename="Dr_Omar_Curriculum_Vitae.pdf"/i);
+    assert.equal(pubStream.text, pdfBuffer.toString());
+
+    // Also test /dr-media/cv alias
+    const aliasStream = await request('/api/portfolio/dr-media/cv');
+    assert.equal(aliasStream.status, 200);
+    assert.equal(aliasStream.headers.get('content-type'), 'application/pdf');
+
+    // 3. Download parameter: attachment disposition
+    const pubDownload = await request('/api/portfolio/public/dr-media/cv?download=1');
+    assert.equal(pubDownload.status, 200);
+    assert.equal(pubDownload.headers.get('content-type'), 'application/pdf');
+    assert.match(pubDownload.headers.get('content-disposition'), /attachment; filename="Dr_Omar_Curriculum_Vitae.pdf"/i);
+
+    // 4. Owner preview endpoint via Bearer token
+    const ownerPreview = await request('/api/portfolio/me/cv/preview', { token });
+    assert.equal(ownerPreview.status, 200);
+    assert.equal(ownerPreview.headers.get('content-type'), 'application/pdf');
+
+    // 5. Owner preview endpoint via ?token= query parameter (for direct browser open)
+    const queryTokenPreview = await request(`/api/portfolio/me/cv/preview?token=${token}`);
+    assert.equal(queryTokenPreview.status, 200);
+    assert.equal(queryTokenPreview.headers.get('content-type'), 'application/pdf');
+
+    // 6. Granular Visibility Redaction:
+    // When visibility.cv = false, public unauthenticated requests receive 404
+    await request('/api/portfolio/me/visibility', {
+      method: 'PATCH',
+      token,
+      body: { cv: false },
+    });
+
+    const redactedPublic = await request('/api/portfolio/public/dr-media/cv');
+    assert.equal(redactedPublic.status, 404);
+
+    // But authenticated owner can still stream their CV
+    const ownerBypass = await request('/api/portfolio/public/dr-media/cv', { token });
+    assert.equal(ownerBypass.status, 200);
+    assert.equal(ownerBypass.headers.get('content-type'), 'application/pdf');
+
+    // And owner preview route works regardless of public visibility
+    const ownerPreviewRedacted = await request('/api/portfolio/me/cv/preview', { token });
+    assert.equal(ownerPreviewRedacted.status, 200);
+
+    // 7. Legacy 'image' upload retrieval:
+    // Direct CDN /image/upload/... returns 401, but signed /image/download succeeds seamlessly
+    const legacyCvUrl = 'https://res.cloudinary.com/demo/image/upload/v1700000010/dentstory/portfolios/cv/doc1/legacy_cv.pdf';
+    const legacyCvPublicId = 'dentstory/portfolios/cv/doc1/legacy_cv';
+    await request('/test/portfolio/me/cv', {
+      method: 'POST',
+      token,
+      body: {
+        _mockFile: {
+          path: legacyCvUrl,
+          filename: legacyCvPublicId,
+          originalname: 'Dr_Legacy_CV.pdf',
+        },
+      },
+    });
+
+    // Reset visibility to true
+    await request('/api/portfolio/me/visibility', {
+      method: 'PATCH',
+      token,
+      body: { cv: true },
+    });
+
+    const legacyDownload = await request('/api/portfolio/public/dr-media/cv?download=1');
+    assert.equal(legacyDownload.status, 200);
+    assert.equal(legacyDownload.headers.get('content-type'), 'application/pdf');
+    assert.match(legacyDownload.headers.get('content-disposition'), /attachment; filename="Dr_Legacy_CV.pdf"/i);
+    assert.equal(legacyDownload.text, pdfBuffer.toString());
+  } finally {
+    global.fetch = originalFetch;
+  }
 });

@@ -9,14 +9,18 @@ const { analyticsCache } = require('../utils/cache');
  */
 const protect = asyncHandler(async (req, res, next) => {
   const authHeader = req.headers.authorization;
+  let token;
+  if (authHeader && authHeader.startsWith('Bearer ')) {
+    token = authHeader.split(' ')[1];
+  } else if (req.query?.token) {
+    token = req.query.token;
+  }
 
-  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+  if (!token) {
     const err = new Error('Not authorised — no token provided');
     err.statusCode = 401;
     throw err;
   }
-
-  const token = authHeader.split(' ')[1];
 
   try {
     const decoded = jwt.verify(token, process.env.ACCESS_TOKEN_SECRET);
@@ -85,12 +89,18 @@ const isAdmin = asyncHandler(async (req, _res, next) => {
  */
 const optionalProtect = async (req, _res, next) => {
   const authHeader = req.headers.authorization;
-  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+  let token;
+  if (authHeader && authHeader.startsWith('Bearer ')) {
+    token = authHeader.split(' ')[1];
+  } else if (req.query?.token) {
+    token = req.query.token;
+  }
+
+  if (!token) {
     req.dentist = null;
     return next();
   }
 
-  const token = authHeader.split(' ')[1];
   try {
     const decoded = jwt.verify(token, process.env.ACCESS_TOKEN_SECRET);
     const cacheKey = `prof_${decoded.id}`;

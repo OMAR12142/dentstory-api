@@ -99,12 +99,44 @@ const avatarUpload = multer({
 
 const uploadAvatar = avatarUpload.single('avatar');
 
+// ── Portfolio CV (PDF) Upload ─────────────────
+const pdfFileFilter = (_req, file, cb) => {
+  if (file.mimetype === 'application/pdf') {
+    cb(null, true);
+  } else {
+    const err = new Error('Only PDF files are allowed for CV upload');
+    err.statusCode = 400;
+    cb(err, false);
+  }
+};
+
+const portfolioCvStorage = new CloudinaryStorage({
+  cloudinary,
+  params: async (req) => ({
+    folder: `dentstory/portfolios/cv/${req.dentist._id}`,
+    resource_type: 'raw',
+  }),
+});
+
+const portfolioCvUpload = multer({
+  storage: portfolioCvStorage,
+  fileFilter: pdfFileFilter,
+  limits: {
+    fileSize: 5 * 1024 * 1024, // 5 MB
+    files: 1,
+  },
+});
+
+const uploadPortfolioCv = portfolioCvUpload.single('cv');
+
 module.exports = {
   uploadImages,
   uploadPortfolioImages,
   uploadPortfolioCover,
+  uploadPortfolioCv,
   uploadAvatar,
   imageFileFilter,
+  pdfFileFilter,
   MAX_PORTFOLIO_CASE_IMAGES,
 };
 

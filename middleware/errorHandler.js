@@ -13,7 +13,9 @@ const errorHandler = (err, req, res, _next) => {
   if (err.name === 'MulterError') {
     let message = err.message || 'File upload failed';
     if (err.code === 'LIMIT_FILE_SIZE') {
-      message = 'Image file is too large. Maximum allowed size exceeded.';
+      message = req?.originalUrl?.includes('/cv')
+        ? 'File is too large. Maximum allowed size is 5 MB.'
+        : 'Image file is too large. Maximum allowed size exceeded.';
     } else if (err.code === 'LIMIT_FILE_COUNT' || err.code === 'LIMIT_UNEXPECTED_FILE') {
       const limit = req?.originalUrl?.includes('/portfolio') ? 8 : 5;
       message = `Maximum of ${limit} images allowed per upload.`;
