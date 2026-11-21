@@ -1564,6 +1564,7 @@ test('13. CV PDF streaming proxy: public delivery, query token auth, redaction &
     const pubStream = await request('/api/portfolio/public/dr-media/cv');
     assert.equal(pubStream.status, 200);
     assert.equal(pubStream.headers.get('content-type'), 'application/pdf');
+    assert.equal(pubStream.headers.get('x-content-type-options'), 'nosniff');
     assert.match(pubStream.headers.get('content-disposition'), /inline; filename="Dr_Omar_Curriculum_Vitae.pdf"/i);
     assert.equal(pubStream.text, pdfBuffer.toString());
 
@@ -1571,17 +1572,41 @@ test('13. CV PDF streaming proxy: public delivery, query token auth, redaction &
     const aliasStream = await request('/api/portfolio/dr-media/cv');
     assert.equal(aliasStream.status, 200);
     assert.equal(aliasStream.headers.get('content-type'), 'application/pdf');
+    assert.equal(aliasStream.headers.get('x-content-type-options'), 'nosniff');
+
+    // Test explicit .pdf extension routes (critical for iOS Safari / Chrome direct preview)
+    const pubPdfStream = await request('/api/portfolio/public/dr-media/cv.pdf');
+    assert.equal(pubPdfStream.status, 200);
+    assert.equal(pubPdfStream.headers.get('content-type'), 'application/pdf');
+    assert.equal(pubPdfStream.headers.get('x-content-type-options'), 'nosniff');
+    assert.match(pubPdfStream.headers.get('content-disposition'), /inline; filename="Dr_Omar_Curriculum_Vitae.pdf"/i);
+    assert.equal(pubPdfStream.text, pdfBuffer.toString());
+
+    const aliasPdfStream = await request('/api/portfolio/dr-media/cv.pdf');
+    assert.equal(aliasPdfStream.status, 200);
+    assert.equal(aliasPdfStream.headers.get('content-type'), 'application/pdf');
 
     // 3. Download parameter: attachment disposition
     const pubDownload = await request('/api/portfolio/public/dr-media/cv?download=1');
     assert.equal(pubDownload.status, 200);
     assert.equal(pubDownload.headers.get('content-type'), 'application/pdf');
+    assert.equal(pubDownload.headers.get('x-content-type-options'), 'nosniff');
     assert.match(pubDownload.headers.get('content-disposition'), /attachment; filename="Dr_Omar_Curriculum_Vitae.pdf"/i);
+
+    const pubPdfDownload = await request('/api/portfolio/public/dr-media/cv.pdf?download=1');
+    assert.equal(pubPdfDownload.status, 200);
+    assert.equal(pubPdfDownload.headers.get('content-type'), 'application/pdf');
+    assert.match(pubPdfDownload.headers.get('content-disposition'), /attachment; filename="Dr_Omar_Curriculum_Vitae.pdf"/i);
 
     // 4. Owner preview endpoint via Bearer token
     const ownerPreview = await request('/api/portfolio/me/cv/preview', { token });
     assert.equal(ownerPreview.status, 200);
     assert.equal(ownerPreview.headers.get('content-type'), 'application/pdf');
+    assert.equal(ownerPreview.headers.get('x-content-type-options'), 'nosniff');
+
+    const ownerPdfPreview = await request('/api/portfolio/me/cv.pdf', { token });
+    assert.equal(ownerPdfPreview.status, 200);
+    assert.equal(ownerPdfPreview.headers.get('content-type'), 'application/pdf');
 
     // 5. Owner preview endpoint via ?token= query parameter (for direct browser open)
     const queryTokenPreview = await request(`/api/portfolio/me/cv/preview?token=${token}`);

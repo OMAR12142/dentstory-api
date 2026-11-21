@@ -43,9 +43,11 @@ router.post('/me/portfolio/cover', protect, uploadCoverMiddleware, uploadPortfol
 router.post('/me/cv', protect, uploadCvMiddleware, uploadPortfolioCv);
 router.delete('/me/cv', protect, deletePortfolioCv);
 router.get('/me/cv/preview', protect, streamOwnerCv);
+router.get('/me/cv.pdf', protect, streamOwnerCv);
 router.post('/me/portfolio/cv', protect, uploadCvMiddleware, uploadPortfolioCv);
 router.delete('/me/portfolio/cv', protect, deletePortfolioCv);
 router.get('/me/portfolio/cv/preview', protect, streamOwnerCv);
+router.get('/me/portfolio/cv.pdf', protect, streamOwnerCv);
 router.put('/me/portfolio/toggle', protect, togglePortfolio);
 router.post('/me/portfolio/cases', protect, publishCase);
 router.put('/me/portfolio/cases/:caseId', protect, editCase);
@@ -60,7 +62,9 @@ router.get('/me/media-library', protect, getMediaLibrary);
 
 // ── Public routes (optional auth for owner draft preview) ──
 // These come AFTER /me/* to prevent slug matching "me"
+router.get('/public/:slug/cv.pdf', optionalProtect, streamPublicCv);
 router.get('/public/:slug/cv', optionalProtect, streamPublicCv);
+router.get('/:slug/cv.pdf', optionalProtect, streamPublicCv);
 router.get('/:slug/cv', optionalProtect, streamPublicCv);
 router.get('/:slug', optionalProtect, getPublicPortfolio);
 router.get('/:slug/case/:caseId', optionalProtect, getPublicCase);

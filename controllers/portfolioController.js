@@ -526,8 +526,8 @@ const getPublicCase = asyncHandler(async (req, res) => {
  * Supports optional ?category= or ?treatmentType= filtering and returns categories breakdown.
  */
 const getMyPortfolio = asyncHandler(async (req, res) => {
-  const page = Math.max(1, parseInt(req.query.page, 10) || 1);
-  const limit = Math.max(1, parseInt(req.query.limit, 10) || 12);
+  const rawLimit = parseInt(req.query.limit, 10);
+  const limit = Math.min(50, Math.max(1, !isNaN(rawLimit) ? rawLimit : 12));
   const categoryParam = req.query.category || req.query.treatmentType;
   const trimmedCategory = typeof categoryParam === 'string' ? categoryParam.trim() : '';
   const isFiltered = Boolean(trimmedCategory) && trimmedCategory.toLowerCase() !== 'all';
@@ -571,8 +571,14 @@ const getMyPortfolio = asyncHandler(async (req, res) => {
     });
   }
 
-  const totalItems = filteredCases.length;
-  const totalPages = Math.ceil(totalItems / limit) || 1;
+  const totalCases = filteredCases.length;
+  const totalItems = totalCases;
+  const totalPages = Math.max(1, Math.ceil(totalCases / limit));
+  const rawPage = parseInt(req.query.page, 10);
+  let page = Math.max(1, !isNaN(rawPage) ? rawPage : 1);
+  if (page > totalPages) {
+    page = totalPages;
+  }
   const skip = (page - 1) * limit;
   const paginatedCases = filteredCases.slice(skip, skip + limit).map((c) => ({
     ...c,
@@ -594,14 +600,20 @@ const getMyPortfolio = asyncHandler(async (req, res) => {
     showClinicInfo: visibility.clinicInfo !== false,
     visibility,
     publishedCases: paginatedCases,
+    cases: paginatedCases,
+    page,
+    limit,
+    totalCases,
+    totalPages,
     categories,
     totalAllCases,
     selectedCategory: isFiltered ? trimmedCategory : '',
     pagination: {
       totalItems,
-      totalCases: totalItems,
+      totalCases,
       totalPages,
       currentPage: page,
+      page,
       limit,
     },
   });
@@ -1432,6 +1444,10 @@ async function streamCvPdf(req, res, portfolio) {
     try {
       const resp = await fetch(url);
       if (resp.ok && resp.body) {
+        const cType = (resp.headers.get('content-type') || '').toLowerCase();
+        if (cType.includes('text/html') || cType.includes('application/xhtml')) {
+          continue;
+        }
         upstreamResponse = resp;
         break;
       }
@@ -1447,9 +1463,13 @@ async function streamCvPdf(req, res, portfolio) {
 
   const isDownload = req.query.download === '1';
   const rawFileName = portfolio.cvFileName || 'Doctor_CV.pdf';
-  const safeFileName = sanitizeFileName(rawFileName);
+  let safeFileName = sanitizeFileName(rawFileName);
+  if (!/\.pdf$/i.test(safeFileName)) {
+    safeFileName = `${safeFileName}.pdf`;
+  }
 
   res.setHeader('Content-Type', 'application/pdf');
+  res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('Cache-Control', 'public, max-age=300');
   res.setHeader(
     'Content-Disposition',
@@ -1461,11 +1481,12 @@ async function streamCvPdf(req, res, portfolio) {
 }
 
 /**
- * Public streaming endpoint: GET /api/portfolio/public/:slug/cv (and /:slug/cv)
+ * Public streaming endpoint: GET /api/portfolio/public/:slug/cv (and /:slug/cv, /cv.pdf)
  */
 const streamPublicCv = asyncHandler(async (req, res) => {
-  const { slug } = req.params;
-  const portfolio = await Portfolio.findOne({ slug: slug.trim().toLowerCase() });
+  const rawSlug = req.params.slug || '';
+  const cleanSlug = rawSlug.replace(/\.pdf$/i, '').trim().toLowerCase();
+  const portfolio = await Portfolio.findOne({ slug: cleanSlug });
 
   if (!portfolio) {
     res.status(404);
